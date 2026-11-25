@@ -236,6 +236,7 @@ impl GitHubClient {
         inline_findings: &[ValidatedFinding],
         fallback_findings: &[ValidatedFinding],
         model_name: &str,
+        language: &str,
     ) -> Result<PublishOutcome> {
         // 4.7 Pre-publish race check: confirm PR is still open and head SHA hasn't moved.
         let latest = self.fetch_pr(pr).await?;
@@ -263,7 +264,7 @@ impl GitHubClient {
                     path: &f.path,
                     line: f.line,
                     side: "RIGHT",
-                    body: format_inline_comment(f),
+                    body: format_inline_comment(f, language),
                 })
                 .collect();
 
@@ -312,6 +313,7 @@ impl GitHubClient {
             inline_posted,
             &combined_fallback,
             model_name,
+            language,
         );
         self.upsert_summary_comment(pr, &summary_md).await?;
 
@@ -439,6 +441,7 @@ mod tests {
                 &[],
                 &[],
                 "qwen2.5-coder:14b",
+                "es",
             )
             .await
             .expect("publish call");
@@ -510,6 +513,7 @@ mod tests {
                 &[finding],
                 &[],
                 "qwen2.5-coder:14b",
+                "es",
             )
             .await
             .expect("422 fallback should succeed");

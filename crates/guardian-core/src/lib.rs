@@ -88,6 +88,7 @@ pub fn finalize_review(
         filtered.inline_findings.len(),
         &filtered.summary_fallback_findings,
         model_name,
+        &config.language,
     );
     (filtered, summary)
 }

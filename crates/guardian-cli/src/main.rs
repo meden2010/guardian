@@ -90,6 +90,10 @@ enum Commands {
         #[arg(long, default_value_t = 40)]
         max_files: usize,
 
+        /// HTTP request timeout in seconds for LLM calls
+        #[arg(long, env = "GUARDIAN_TIMEOUT_SECS", default_value_t = 240)]
+        timeout_secs: u64,
+
         /// Run the full pipeline without posting comments to GitHub
         #[arg(long, env = "GUARDIAN_DRY_RUN")]
         dry_run: bool,
@@ -240,6 +244,7 @@ async fn run_review(cmd: Commands) -> Result<()> {
         min_severity,
         max_comments,
         max_files,
+        timeout_secs,
         dry_run,
         github_api_url,
         ..
@@ -265,7 +270,7 @@ async fn run_review(cmd: Commands) -> Result<()> {
         model: model.clone(),
         api_key,
         allow_insecure_http,
-        timeout_secs: 120,
+        timeout_secs,
     })?;
 
     // Resolve input source: `--diff-file` (local) vs `--pr` / GitHub Actions event.
@@ -352,6 +357,7 @@ async fn run_review(cmd: Commands) -> Result<()> {
                 &filtered.inline_findings,
                 &filtered.summary_fallback_findings,
                 &model,
+                &config.language,
             )
             .await?;
         match outcome {

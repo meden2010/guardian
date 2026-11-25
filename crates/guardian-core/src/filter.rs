@@ -201,65 +201,194 @@ pub fn filter_findings(
     }
 }
 
-/// Formats an individual inline PR comment in Markdown.
-pub fn format_inline_comment(finding: &ValidatedFinding) -> String {
+/// Formats an individual inline PR comment using GitHub-native Markdown alerts and Guardian branding.
+pub fn format_inline_comment(finding: &ValidatedFinding, language: &str) -> String {
+    let is_es = is_spanish(language);
+    let alert = match finding.severity {
+        crate::types::Severity::Critical => "CAUTION",
+        crate::types::Severity::High => "WARNING",
+        crate::types::Severity::Medium => "IMPORTANT",
+        crate::types::Severity::Low => "NOTE",
+    };
+
+    let scenario_label = if is_es {
+        "Escenario de fallo"
+    } else {
+        "Failure scenario"
+    };
+    let suggestion_label = if is_es {
+        "💡 Sugerencia de corrección"
+    } else {
+        "💡 Suggested fix"
+    };
+    let footer = if is_es {
+        "<sub>🛡️ Revisado por **Guardian** · Silencia falsos positivos agregando `guardian-ignore` en esta línea.</sub>"
+    } else {
+        "<sub>🛡️ Reviewed by **Guardian** · Suppress false positives by adding `guardian-ignore` on this line.</sub>"
+    };
+
+    let msg_quoted = quote_multiline(&finding.message);
+    let scenario_quoted = quote_multiline(&finding.scenario);
+
     let mut body = format!(
-        "**[{sev} | {cat}]** {msg}\n\n**Failure scenario:** {scenario}",
+        "> [!{alert}]\n\
+         > ### 🛡️ Guardian · `{sev}` · `{cat}`\n\
+         >\n\
+         > {msg_quoted}\n\
+         >\n\
+         > **{scenario_label}:** {scenario_quoted}\n",
         sev = finding.severity.as_str().to_uppercase(),
         cat = finding.category.as_str(),
-        msg = finding.message,
-        scenario = finding.scenario,
     );
 
     if let Some(sugg) = &finding.suggestion {
-        body.push_str("\n\nSuggested fix:\n```\n");
-        body.push_str(sugg.trim_end());
-        body.push_str("\n```");
+        body.push_str(&format!(
+            "\n<details>\n<summary>{suggestion_label}</summary>\n\n```\n{}\n```\n\n</details>\n",
+            sugg.trim_end()
+        ));
     }
 
-    body.push_str("\n\n<sub>Suppress false positive with `guardian-ignore` on the line.</sub>");
+    body.push_str("\n---\n");
+    body.push_str(footer);
     body
 }
 
-/// Formats the fixed PR summary comment (`<!-- guardian:summary:v1 -->`).
+/// Formats the fixed PR summary comment (`<!-- guardian:summary:v1 -->`) with GitHub Alerts.
 pub fn format_pr_summary(
     status: &ReviewStatus,
     reviewed_files: usize,
     inline_count: usize,
     fallback_findings: &[ValidatedFinding],
     model_name: &str,
+    language: &str,
 ) -> String {
-    let mut out = String::from(SUMMARY_MARKER);
-    out.push_str("\n### Guardian Code Review\n\n");
+    let is_es = is_spanish(language);
+    let total = inline_count + fallback_findings.len();
 
-    match status {
-        ReviewStatus::ReviewedClean => {
-            out.push_str(&format!(
-                "**Status:** Reviewed ({reviewed_files} file(s)) — no high-confidence logical bugs or edge cases found.\n"
-            ));
-        }
-        ReviewStatus::ReviewedWithFindings => {
-            let total = inline_count + fallback_findings.len();
-            out.push_str(&format!(
-                "**Status:** Reviewed ({reviewed_files} file(s)) — **{total}** finding(s) reported.\n"
-            ));
-        }
-        ReviewStatus::ReviewedPartial { reason } => {
-            out.push_str(&format!("**Status:** Partially reviewed — {reason}.\n"));
-        }
-        ReviewStatus::Skipped { reason } => {
-            out.push_str(&format!("**Status:** Skipped — {reason}.\n"));
-        }
-        ReviewStatus::Error { reason } => {
-            out.push_str(&format!("**Status:** Error — {reason}.\n"));
-        }
-    }
+    let (alert, status_label, headline) = match status {
+        ReviewStatus::ReviewedClean => (
+            "TIP",
+            if is_es { "Limpio" } else { "Clean" },
+            if is_es {
+                format!(
+                    "Sin bugs lógicos ni *edge cases* de alta confianza en **{reviewed_files}** archivo(s) revisado(s)."
+                )
+            } else {
+                format!(
+                    "No high-confidence logical bugs or edge cases found across **{reviewed_files}** reviewed file(s)."
+                )
+            },
+        ),
+        ReviewStatus::ReviewedWithFindings => (
+            "IMPORTANT",
+            if is_es {
+                "Revisado con hallazgos"
+            } else {
+                "Reviewed with findings"
+            },
+            if is_es {
+                format!(
+                    "Se detectaron **{total}** hallazgo(s) de alta confianza en **{reviewed_files}** archivo(s) revisado(s)."
+                )
+            } else {
+                format!(
+                    "Detected **{total}** high-confidence finding(s) across **{reviewed_files}** reviewed file(s)."
+                )
+            },
+        ),
+        ReviewStatus::ReviewedPartial { reason } => (
+            "WARNING",
+            if is_es {
+                "Revisado parcialmente"
+            } else {
+                "Partially reviewed"
+            },
+            if is_es {
+                format!("Revisión parcial — {reason}.")
+            } else {
+                format!("Partially reviewed — {reason}.")
+            },
+        ),
+        ReviewStatus::Skipped { reason } => (
+            "NOTE",
+            if is_es { "Omitido" } else { "Skipped" },
+            if is_es {
+                format!("Revisión omitida — {reason}.")
+            } else {
+                format!("Review skipped — {reason}.")
+            },
+        ),
+        ReviewStatus::Error { reason } => (
+            "CAUTION",
+            "Error",
+            if is_es {
+                format!("No se pudo completar la revisión — {reason}.")
+            } else {
+                format!("Review could not complete — {reason}.")
+            },
+        ),
+    };
+
+    let title = if is_es {
+        "🛡️ Guardian · Revisión de Código"
+    } else {
+        "🛡️ Guardian · Code Review"
+    };
+    let details_title = if is_es {
+        "Detalles de la ejecución"
+    } else {
+        "Run details"
+    };
+    let (h_metric, h_val, r_status, r_files, r_inline, r_model) = if is_es {
+        (
+            "Métrica",
+            "Valor",
+            "Estado",
+            "Archivos revisados",
+            "Comentarios inline",
+            "Modelo",
+        )
+    } else {
+        (
+            "Metric",
+            "Value",
+            "Status",
+            "Files reviewed",
+            "Inline comments",
+            "Model",
+        )
+    };
+
+    let mut out = format!(
+        "{SUMMARY_MARKER}\n\
+         > [!{alert}]\n\
+         > ### {title}\n\
+         >\n\
+         > {headline}\n\
+         >\n\
+         > <details>\n\
+         > <summary>⚙️ {details_title}</summary>\n\
+         >\n\
+         > | {h_metric} | {h_val} |\n\
+         > | :--- | :--- |\n\
+         > | **{r_status}** | {status_label} |\n\
+         > | **{r_files}** | {reviewed_files} |\n\
+         > | **{r_inline}** | {inline_count} |\n\
+         > | **{r_model}** | `{model_name}` |\n\
+         > </details>\n"
+    );
 
     if !fallback_findings.is_empty() {
-        out.push_str("\n#### Additional Findings (outside inline diff range)\n\n");
+        let fallback_heading = if is_es {
+            "#### Hallazgos adicionales (fuera de rango inline del diff)"
+        } else {
+            "#### Additional Findings (outside inline diff range)"
+        };
+        let scen_lbl = if is_es { "Escenario" } else { "Scenario" };
+        out.push_str(&format!("\n{fallback_heading}\n\n"));
         for f in fallback_findings {
             out.push_str(&format!(
-                "- **`{path}:{line}`** [{sev} | {cat}]: {msg} *(Scenario: {scenario})*\n",
+                "- **`{path}:{line}`** `{sev}` · `{cat}`: {msg} *({scen_lbl}: {scenario})*\n",
                 path = f.path,
                 line = f.line,
                 sev = f.severity.as_str().to_uppercase(),
@@ -270,16 +399,32 @@ pub fn format_pr_summary(
         }
     }
 
-    out.push_str(&format!(
-        "\n<sub>Model: `{model_name}` | Guardian v{ver}</sub>\n",
-        ver = crate::VERSION
-    ));
+    let footer = if is_es {
+        format!(
+            "\n---\n<sub>🛡️ **Guardian** `v{ver}` · Enfoque estricto en bugs lógicos y *edge cases*</sub>\n",
+            ver = crate::VERSION
+        )
+    } else {
+        format!(
+            "\n---\n<sub>🛡️ **Guardian** `v{ver}` · Strictly focused on logical bugs and edge cases</sub>\n",
+            ver = crate::VERSION
+        )
+    };
+    out.push_str(&footer);
     out
+}
+
+fn is_spanish(language: &str) -> bool {
+    language.trim().to_ascii_lowercase().starts_with("es")
+}
+
+fn quote_multiline(text: &str) -> String {
+    text.trim().replace('\n', "\n> ")
 }
 
 fn has_concrete_scenario(scenario: &str) -> bool {
     let trimmed = scenario.trim();
-    if trimmed.len() < 12 {
+    if trimmed.len() < 6 {
         return false;
     }
     let lower = trimmed.to_ascii_lowercase();
@@ -357,5 +502,12 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert_eq!(res.trace.dropped_over_max_comments, 1);
         assert_eq!(res.inline_findings.len(), 1);
         assert_eq!(res.inline_findings[0].severity, Severity::High);
+
+        let inline_md = format_inline_comment(&res.inline_findings[0], "es");
+        assert!(inline_md.starts_with("> [!WARNING]\n> ### 🛡️ Guardian · `HIGH` · `edge_case`"));
+        assert!(inline_md.contains("**Escenario de fallo:**"));
+
+        let summary_md = format_pr_summary(&res.status, 1, 1, &[], "qwen2.5-coder:14b", "es");
+        assert!(summary_md.contains("> [!IMPORTANT]\n> ### 🛡️ Guardian · Revisión de Código"));
     }
 }
