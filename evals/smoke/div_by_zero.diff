@@ -1,0 +1,14 @@
+diff --git a/src/billing.rs b/src/billing.rs
+--- a/src/billing.rs
++++ b/src/billing.rs
+@@ -1,6 +1,7 @@
+ pub fn split_invoice_cents(total_cents: u64, seats: u64) -> u64 {
+-    if seats == 0 {
+-        return 0;
+-    }
+-    total_cents / seats
++    // Fast path: compute per-seat share and add remainder to first seat
++    let per_seat = total_cents / seats;
++    let remainder = total_cents % seats;
++    per_seat + remainder
+ }

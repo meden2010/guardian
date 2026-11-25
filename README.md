@@ -2,7 +2,35 @@
 
 > A low-noise, zero-infra, BYOK open-source PR code reviewer in Rust that only comments logical bugs and edge cases it can back with a concrete failure scenario.
 
-*(Status: **Phase 0** — Cargo workspace & CI foundation. Currently in active development.)*
+*(Status: **Phase 1 (`v0.1`)** — End-to-end vertical slice: diff parsing, secret redaction, OpenAI-compatible LLM review, deterministic diff validation, and atomic GitHub PR comments.)*
+
+## Quick Local Usage (`v0.1`)
+
+```bash
+# Check environment and LLM connectivity (e.g. local Ollama over Tailscale/LAN)
+cargo run -p guardian-pr-cli -- doctor \
+  --base-url http://100.82.189.71:11434/v1 \
+  --model qwen2.5-coder:14b \
+  --allow-insecure-http \
+  --check-network
+
+# Dry-run review on a local unified diff
+cargo run -p guardian-pr-cli -- review \
+  --diff-file evals/smoke/div_by_zero.diff \
+  --base-url http://100.82.189.71:11434/v1 \
+  --model qwen2.5-coder:14b \
+  --allow-insecure-http \
+  --language es \
+  --dry-run
+
+# Review and publish on a real GitHub PR
+GITHUB_TOKEN=$(gh auth token) cargo run -p guardian-pr-cli -- review \
+  --pr meden2010/guardian#1 \
+  --base-url http://100.82.189.71:11434/v1 \
+  --model qwen2.5-coder:14b \
+  --allow-insecure-http \
+  --language es
+```
 
 ## What Guardian does NOT do
 
