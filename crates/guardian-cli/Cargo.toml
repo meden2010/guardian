@@ -1,0 +1,18 @@
+[package]
+name = "guardian-pr-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI and GitHub Action runner for Guardian PR code reviewer."
+
+[[bin]]
+name = "guardian"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+guardian-pr-core = { path = "../guardian-core" }
+tracing.workspace = true
+tracing-subscriber.workspace = true
