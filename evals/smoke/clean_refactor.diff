@@ -1,0 +1,9 @@
+diff --git a/src/greeting.rs b/src/greeting.rs
+--- a/src/greeting.rs
++++ b/src/greeting.rs
+@@ -1,3 +1,7 @@
+ pub fn is_non_empty_trimmed(name: &str) -> bool {
+-    !name.trim().is_empty()
++    let cleaned = name.trim();
++    !cleaned.is_empty()
+ }
