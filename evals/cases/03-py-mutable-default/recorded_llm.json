@@ -1,0 +1,15 @@
+{
+  "findings": [
+    {
+      "path": "src/tags.py",
+      "line": 1,
+      "code_snippet": "def add_audit_tag(tag: str, history: list[str] = []) -> list[str]:",
+      "category": "bug",
+      "severity": "high",
+      "introduced_by_change": true,
+      "scenario": "Llamar add_audit_tag('a') y luego add_audit_tag('b') sin segundo argumento reutiliza la misma lista ['a', 'b'].",
+      "message": "El argumento por defecto mutable `[]` persiste entre llamadas y contamina listas de invocaciones distintas.",
+      "suggestion": "def add_audit_tag(tag: str, history: list[str] | None = None) -> list[str]:"
+    }
+  ]
+}

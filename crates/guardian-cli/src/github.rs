@@ -1,9 +1,11 @@
-//! Lightweight GitHub REST adapter for fetching PR diffs and publishing atomic reviews.
+//! Lightweight GitHub REST adapter for fetching PR diffs, fingerprints, and publishing atomic reviews.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use guardian_core::filter::{format_inline_comment, format_pr_summary, SUMMARY_MARKER};
+use guardian_core::fingerprint::extract_fingerprints;
 use guardian_core::types::{PrMetadata, ReviewStatus, ValidatedFinding};
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use reqwest::{Client, StatusCode};
@@ -147,7 +149,8 @@ struct InlineReviewComment<'a> {
 }
 
 #[derive(Debug, Deserialize)]
-struct IssueComment {
+struct CommentNode {
+    #[serde(default)]
     id: u64,
     #[serde(default)]
     body: String,
@@ -224,6 +227,43 @@ impl GitHubClient {
         resp.text().await.context("failed reading PR diff text")
     }
 
+    /// Reads existing PR review comments + issue comments and extracts all `<!-- guardian:fp=... -->` hashes.
+    pub async fn fetch_existing_fingerprints(&self, pr: &PrRef) -> Result<HashSet<String>> {
+        let mut fps = HashSet::new();
+
+        let review_comments_url = format!(
+            "{}/repos/{}/{}/pulls/{}/comments?per_page=100",
+            self.api_base, pr.owner, pr.repo, pr.number
+        );
+        let issue_comments_url = format!(
+            "{}/repos/{}/{}/issues/{}/comments?per_page=100",
+            self.api_base, pr.owner, pr.repo, pr.number
+        );
+
+        for url in [review_comments_url, issue_comments_url] {
+            let resp = self
+                .http
+                .get(&url)
+                .header(USER_AGENT, "guardian-pr-reviewer")
+                .header(ACCEPT, "application/vnd.github+json")
+                .header(AUTHORIZATION, format!("Bearer {}", self.token))
+                .send()
+                .await
+                .context("ERR_GITHUB_NETWORK: failed fetching existing PR comments")?;
+
+            if resp.status().is_success() {
+                let items: Vec<CommentNode> = resp.json().await.unwrap_or_default();
+                for item in items {
+                    for fp in extract_fingerprints(&item.body) {
+                        fps.insert(fp);
+                    }
+                }
+            }
+        }
+
+        Ok(fps)
+    }
+
     /// Atomically publishes inline review comments + upserts the single fixed summary comment.
     /// Re-verifies `state == "open"` and `head.sha` before posting, and falls back to summary on HTTP 422.
     #[allow(clippy::too_many_arguments)]
@@ -235,10 +275,10 @@ impl GitHubClient {
         reviewed_files: usize,
         inline_findings: &[ValidatedFinding],
         fallback_findings: &[ValidatedFinding],
+        deduplicated_count: usize,
         model_name: &str,
         language: &str,
     ) -> Result<PublishOutcome> {
-        // 4.7 Pre-publish race check: confirm PR is still open and head SHA hasn't moved.
         let latest = self.fetch_pr(pr).await?;
         if latest.state != "open" {
             return Ok(PublishOutcome::AbortedStaleState {
@@ -292,7 +332,6 @@ impl GitHubClient {
             if resp.status().is_success() {
                 inline_posted = inline_findings.len();
             } else if resp.status() == StatusCode::UNPROCESSABLE_ENTITY {
-                // 4.8 HTTP 422 fallback: move rejected inline comments to summary instead of losing them.
                 tracing::warn!("GitHub rejected inline line positions (HTTP 422); routing findings to summary fallback");
                 combined_fallback.extend_from_slice(inline_findings);
             } else if resp.status() == StatusCode::FORBIDDEN
@@ -312,6 +351,7 @@ impl GitHubClient {
             reviewed_files,
             inline_posted,
             &combined_fallback,
+            deduplicated_count,
             model_name,
             language,
         );
@@ -339,7 +379,7 @@ impl GitHubClient {
             .context("failed listing PR issue comments")?;
 
         if list_resp.status().is_success() {
-            let existing: Vec<IssueComment> = list_resp.json().await.unwrap_or_default();
+            let existing: Vec<CommentNode> = list_resp.json().await.unwrap_or_default();
             if let Some(found) = existing
                 .into_iter()
                 .find(|c| c.body.contains(SUMMARY_MARKER))
@@ -392,6 +432,7 @@ impl GitHubClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use guardian_core::fingerprint::{compute_fingerprint, format_fp_marker};
     use guardian_core::types::{FindingCategory, Severity};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -410,6 +451,36 @@ mod tests {
 
         let b = PrRef::parse("https://github.com/meden2010/guardian/pull/7/").expect("url");
         assert_eq!(b.number, 7);
+    }
+
+    #[tokio::test]
+    async fn fetches_existing_fingerprints_from_review_and_issue_comments() {
+        let server = MockServer::start().await;
+        let fp1 = compute_fingerprint("src/a.rs", "a / b", FindingCategory::Bug);
+        let fp2 = compute_fingerprint("src/b.rs", "arr[i]", FindingCategory::EdgeCase);
+
+        Mock::given(method("GET"))
+            .and(path("/repos/meden2010/guardian/pulls/5/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": 1, "body": format!("{}\nInline comment", format_fp_marker(&fp1))}
+            ])))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/repos/meden2010/guardian/issues/5/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": 2, "body": format!("{SUMMARY_MARKER}\n- {} fallback", format_fp_marker(&fp2))}
+            ])))
+            .mount(&server)
+            .await;
+
+        let gh = GitHubClient::new(server.uri(), "tok".into()).expect("gh init");
+        let pr = PrRef::parse("meden2010/guardian#5").expect("pr");
+        let fps = gh.fetch_existing_fingerprints(&pr).await.expect("fps");
+        assert!(fps.contains(&fp1));
+        assert!(fps.contains(&fp2));
+        assert_eq!(fps.len(), 2);
     }
 
     #[tokio::test]
@@ -440,6 +511,7 @@ mod tests {
                 1,
                 &[],
                 &[],
+                0,
                 "qwen2.5-coder:14b",
                 "es",
             )
@@ -468,14 +540,12 @@ mod tests {
             .mount(&server)
             .await;
 
-        // Simulate GitHub rejecting inline review with 422 Unprocessable Entity.
         Mock::given(method("POST"))
             .and(path("/repos/meden2010/guardian/pulls/2/reviews"))
             .respond_with(ResponseTemplate::new(422))
             .mount(&server)
             .await;
 
-        // Existing fixed summary comment is present -> should PATCH it instead of creating a duplicate.
         Mock::given(method("GET"))
             .and(path("/repos/meden2010/guardian/issues/2/comments"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
@@ -496,6 +566,8 @@ mod tests {
         let finding = ValidatedFinding {
             path: "src/lib.rs".into(),
             line: 10,
+            also_at_lines: Vec::new(),
+            fingerprint: compute_fingerprint("src/lib.rs", "a / b", FindingCategory::Bug),
             code_snippet: "a / b".into(),
             category: FindingCategory::Bug,
             severity: Severity::High,
@@ -512,6 +584,7 @@ mod tests {
                 1,
                 &[finding],
                 &[],
+                0,
                 "qwen2.5-coder:14b",
                 "es",
             )

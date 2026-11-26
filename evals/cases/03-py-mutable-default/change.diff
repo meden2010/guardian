@@ -1,0 +1,7 @@
+diff --git a/src/tags.py b/src/tags.py
+--- /dev/null
++++ b/src/tags.py
+@@ -0,0 +1,4 @@
++def add_audit_tag(tag: str, history: list[str] = []) -> list[str]:
++    history.append(tag.strip().lower())
++    return history

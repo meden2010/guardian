@@ -1,6 +1,8 @@
+pub mod eval;
 pub mod github;
 pub mod llm;
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -8,9 +10,9 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use github::{GitHubClient, PrRef, PublishOutcome};
-use guardian_core::types::{PrMetadata, ReviewConfig, ReviewStatus, Severity};
+use guardian_core::types::{LlmReviewOutput, PrMetadata, ReviewConfig, ReviewStatus, Severity};
 use guardian_core::{finalize_review, prepare_review, PreparedDiff};
-use llm::{OpenAiCompatibleClient, OpenAiCompatibleConfig};
+use llm::{OpenAiCompatibleClient, OpenAiCompatibleConfig, TokenUsage};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -24,7 +26,7 @@ struct Cli {
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-enum CliSeverity {
+pub enum CliSeverity {
     Low,
     Medium,
     High,
@@ -62,9 +64,9 @@ enum Commands {
         )]
         base_url: String,
 
-        /// Model identifier (required; no silent default)
+        /// Model identifier (required unless `--replay` is used)
         #[arg(long, env = "GUARDIAN_LLM_MODEL")]
-        model: String,
+        model: Option<String>,
 
         /// Name of environment variable containing the LLM API key (optional for local servers)
         #[arg(long, default_value = "GUARDIAN_LLM_API_KEY")]
@@ -94,6 +96,14 @@ enum Commands {
         #[arg(long, env = "GUARDIAN_TIMEOUT_SECS", default_value_t = 240)]
         timeout_secs: u64,
 
+        /// Record raw redacted LLM response JSON into `<DIR>/llm_response.json`
+        #[arg(long)]
+        record: Option<PathBuf>,
+
+        /// Replay raw LLM response JSON from `<DIR>/llm_response.json` without calling the LLM
+        #[arg(long)]
+        replay: Option<PathBuf>,
+
         /// Run the full pipeline without posting comments to GitHub
         #[arg(long, env = "GUARDIAN_DRY_RUN")]
         dry_run: bool,
@@ -106,6 +116,9 @@ enum Commands {
         #[arg(long, env = "GITHUB_API_URL", default_value = "https://api.github.com")]
         github_api_url: String,
     },
+
+    /// Run benchmark evaluation suite (`evals/cases`) in live LLM or offline replay mode
+    Eval(eval::EvalArgs),
 
     /// Validate environment, URL safety, and LLM / GitHub connectivity
     Doctor {
@@ -155,6 +168,10 @@ async fn main() -> Result<()> {
             )
             .await
         }
+        Commands::Eval(args) => {
+            eval::run_eval(args).await?;
+            Ok(())
+        }
         cmd @ Commands::Review { .. } => {
             let fail_on_error = matches!(
                 &cmd,
@@ -164,7 +181,6 @@ async fn main() -> Result<()> {
                 }
             );
             if let Err(err) = run_review(cmd).await {
-                // Redact any accidental secrets from error display (4.9 / 6.4).
                 let safe_err = guardian_core::redact::redact_secrets(&format!("{err:#}"));
                 eprintln!("::warning::Guardian review did not complete: {safe_err}");
                 append_step_summary(&format!(
@@ -245,6 +261,8 @@ async fn run_review(cmd: Commands) -> Result<()> {
         max_comments,
         max_files,
         timeout_secs,
+        record,
+        replay,
         dry_run,
         github_api_url,
         ..
@@ -262,22 +280,21 @@ async fn run_review(cmd: Commands) -> Result<()> {
         ignore_paths: Vec::new(),
     };
 
-    let api_key = std::env::var(&api_key_env)
-        .ok()
-        .filter(|s| !s.trim().is_empty());
-    let llm_client = OpenAiCompatibleClient::new(OpenAiCompatibleConfig {
-        base_url,
-        model: model.clone(),
-        api_key,
-        allow_insecure_http,
-        timeout_secs,
-    })?;
+    let model_label = match (&model, &replay) {
+        (Some(m), _) => m.clone(),
+        (None, Some(_)) => "replay".to_string(),
+        (None, None) => {
+            anyhow::bail!(
+                "ERR_MISSING_MODEL: pass --model (or GUARDIAN_LLM_MODEL) unless --replay is set"
+            )
+        }
+    };
 
     // Resolve input source: `--diff-file` (local) vs `--pr` / GitHub Actions event.
-    let (raw_diff, metadata, gh_ctx) = if let Some(path) = diff_file {
+    let (raw_diff, metadata, existing_fps, gh_ctx) = if let Some(path) = diff_file {
         let content = fs::read_to_string(&path)
             .with_context(|| format!("failed reading diff file `{}`", path.display()))?;
-        (content, PrMetadata::default(), None)
+        (content, PrMetadata::default(), HashSet::new(), None)
     } else {
         let pr_spec = match pr {
             Some(s) => s,
@@ -298,10 +315,12 @@ async fn run_review(cmd: Commands) -> Result<()> {
         }
 
         let diff_text = gh.fetch_pr_diff(&pr_ref).await?;
+        let existing_fps = gh.fetch_existing_fingerprints(&pr_ref).await?;
         let head_sha = pr_info.head.sha.clone();
         (
             diff_text,
             pr_info.to_metadata(),
+            existing_fps,
             Some((gh, pr_ref, head_sha)),
         )
     };
@@ -329,8 +348,40 @@ async fn run_review(cmd: Commands) -> Result<()> {
         } => (parsed_diff, prompt),
     };
 
-    let stats = llm_client.review(&prompt.system, &prompt.user).await?;
-    let (filtered, summary_md) = finalize_review(stats.output, &parsed_diff, &config, &model);
+    let (llm_output, usage) = if let Some(replay_dir) = &replay {
+        let replay_file = replay_dir.join("llm_response.json");
+        let raw = fs::read_to_string(&replay_file)
+            .with_context(|| format!("failed reading replay file `{}`", replay_file.display()))?;
+        let out: LlmReviewOutput =
+            serde_json::from_str(&raw).context("invalid JSON in replay file")?;
+        (out, TokenUsage::default())
+    } else {
+        let api_key = std::env::var(&api_key_env)
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        let llm_client = OpenAiCompatibleClient::new(OpenAiCompatibleConfig {
+            base_url,
+            model: model_label.clone(),
+            api_key,
+            allow_insecure_http,
+            timeout_secs,
+        })?;
+        let stats = llm_client.review(&prompt.system, &prompt.user).await?;
+        if let Some(rec_dir) = &record {
+            fs::create_dir_all(rec_dir)?;
+            let pretty = serde_json::to_string_pretty(&stats.output)?;
+            fs::write(rec_dir.join("llm_response.json"), pretty)?;
+        }
+        (stats.output, stats.usage)
+    };
+
+    let (filtered, summary_md) = finalize_review(
+        llm_output,
+        &parsed_diff,
+        &config,
+        &existing_fps,
+        &model_label,
+    );
     let elapsed = started.elapsed();
 
     if dry_run || gh_ctx.is_none() {
@@ -338,11 +389,12 @@ async fn run_review(cmd: Commands) -> Result<()> {
         println!("Funnel: {}", filtered.trace.format_funnel());
         for f in &filtered.inline_findings {
             println!(
-                "\n--- INLINE {}:{} [{} | {}] ---\n{}\nScenario: {}",
+                "\n--- INLINE {}:{} [{} | {}] (fp={}) ---\n{}\nScenario: {}",
                 f.path,
                 f.line,
                 f.severity.as_str(),
                 f.category.as_str(),
+                &f.fingerprint[..15],
                 f.message,
                 f.scenario
             );
@@ -356,7 +408,8 @@ async fn run_review(cmd: Commands) -> Result<()> {
                 parsed_diff.files.len(),
                 &filtered.inline_findings,
                 &filtered.summary_fallback_findings,
-                &model,
+                filtered.trace.dropped_duplicate_existing,
+                &model_label,
                 &config.language,
             )
             .await?;
@@ -366,8 +419,12 @@ async fn run_review(cmd: Commands) -> Result<()> {
                 fallback_posted,
             } => {
                 println!(
-                    "Guardian published review on {}#{}: {} inline, {} fallback",
-                    pr_ref.repo, pr_ref.number, inline_posted, fallback_posted
+                    "Guardian published review on {}#{}: {} inline, {} fallback ({} deduplicated)",
+                    pr_ref.repo,
+                    pr_ref.number,
+                    inline_posted,
+                    fallback_posted,
+                    filtered.trace.dropped_duplicate_existing
                 );
             }
             PublishOutcome::AbortedStaleState { reason } => {
@@ -378,7 +435,7 @@ async fn run_review(cmd: Commands) -> Result<()> {
 
     append_step_summary(&format!(
         "### Guardian Operator Summary\n\
-         - **Model:** `{model}`\n\
+         - **Model:** `{model_label}`\n\
          - **Files reviewed:** {} (skipped: {})\n\
          - **Funnel:** `{}`\n\
          - **Tokens:** {} in / {} out\n\
@@ -386,8 +443,8 @@ async fn run_review(cmd: Commands) -> Result<()> {
         parsed_diff.files.len(),
         parsed_diff.skipped_files.len(),
         filtered.trace.format_funnel(),
-        stats.usage.prompt_tokens,
-        stats.usage.completion_tokens,
+        usage.prompt_tokens,
+        usage.completion_tokens,
         elapsed.as_secs_f64(),
     ));
 

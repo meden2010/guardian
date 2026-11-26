@@ -1,0 +1,8 @@
+diff --git a/src/stats.py b/src/stats.py
+--- /dev/null
++++ b/src/stats.py
+@@ -0,0 +1,5 @@
++def safe_mean(values: list[float]) -> float:
++    if not values:
++        raise ValueError("values must not be empty")
++    return sum(values) / len(values)

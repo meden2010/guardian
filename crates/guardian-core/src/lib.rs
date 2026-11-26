@@ -1,13 +1,17 @@
 //! Pure core library for Guardian.
 //!
 //! Contains diff parsing, secret redaction, prompt construction, deterministic
-//! noise filtering, and finding validation with zero network or filesystem I/O.
+//! 7-stage noise filtering, SHA-256 fingerprinting, and finding validation with
+//! zero network or filesystem I/O.
 
 pub mod diff;
 pub mod filter;
+pub mod fingerprint;
 pub mod prompt;
 pub mod redact;
 pub mod types;
+
+use std::collections::HashSet;
 
 use diff::{parse_unified_diff, ParsedDiff};
 use filter::{filter_findings, format_pr_summary, FilteredReview};
@@ -74,19 +78,26 @@ pub fn parse_llm_output(raw_response: &str) -> Result<LlmReviewOutput, CoreError
     Ok(parsed)
 }
 
-/// Runs deterministic validation and builds both inline findings and the PR summary markdown.
+/// Runs deterministic 7-stage validation/deduplication and builds inline findings + PR summary.
 pub fn finalize_review(
     llm_output: LlmReviewOutput,
     parsed_diff: &ParsedDiff,
     config: &ReviewConfig,
+    existing_fingerprints: &HashSet<String>,
     model_name: &str,
 ) -> (FilteredReview, String) {
-    let filtered = filter_findings(llm_output.findings, parsed_diff, config);
+    let filtered = filter_findings(
+        llm_output.findings,
+        parsed_diff,
+        config,
+        existing_fingerprints,
+    );
     let summary = format_pr_summary(
         &filtered.status,
         parsed_diff.files.len(),
         filtered.inline_findings.len(),
         &filtered.summary_fallback_findings,
+        filtered.trace.dropped_duplicate_existing,
         model_name,
         &config.language,
     );

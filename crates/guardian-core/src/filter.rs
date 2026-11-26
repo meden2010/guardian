@@ -1,6 +1,9 @@
-//! Deterministic noise-filtering pipeline and PR summary formatter.
+//! Deterministic 7-stage noise-filtering pipeline and PR comment/summary formatters.
+
+use std::collections::HashSet;
 
 use crate::diff::{DiffMatch, ParsedDiff};
+use crate::fingerprint::{compute_fingerprint, format_fp_marker};
 use crate::types::{
     DropReason, DroppedFinding, FilterTrace, LlmFinding, ReviewConfig, ReviewStatus,
     SkipFileReason, ValidatedFinding,
@@ -20,14 +23,15 @@ pub fn filter_findings(
     candidates: Vec<LlmFinding>,
     parsed_diff: &ParsedDiff,
     config: &ReviewConfig,
+    existing_fingerprints: &HashSet<String>,
 ) -> FilteredReview {
     let mut trace = FilterTrace {
         generated: candidates.len(),
         ..FilterTrace::default()
     };
 
-    let mut valid_inline: Vec<ValidatedFinding> = Vec::new();
-    let mut valid_fallback: Vec<ValidatedFinding> = Vec::new();
+    let mut raw_inline: Vec<ValidatedFinding> = Vec::new();
+    let mut raw_fallback: Vec<ValidatedFinding> = Vec::new();
 
     for cand in candidates {
         // Stage 1: Deterministic validation against the redacted diff.
@@ -101,7 +105,7 @@ pub fn filter_findings(
             continue;
         }
 
-        // Stage 7a: Inline escape hatch (`guardian-ignore`).
+        // Stage 7a: Inline escape hatch (`guardian-ignore`) before grouping/dedup.
         if has_guardian_ignore(&matched_line_text) {
             trace.dropped_ignored_inline += 1;
             trace.drops.push(DroppedFinding {
@@ -118,9 +122,24 @@ pub fn filter_findings(
             .trim_start_matches("./")
             .to_string();
 
+        let fingerprint = compute_fingerprint(&normalized_path, &matched_line_text, cand.category);
+
+        // Stage 6: Cross-commit deduplication against existing PR comments.
+        if existing_fingerprints.contains(&fingerprint) {
+            trace.dropped_duplicate_existing += 1;
+            trace.drops.push(DroppedFinding {
+                path: normalized_path,
+                line: resolved_line,
+                reason: DropReason::DuplicateExistingComment,
+            });
+            continue;
+        }
+
         let validated = ValidatedFinding {
             path: normalized_path,
             line: resolved_line,
+            also_at_lines: Vec::new(),
+            fingerprint,
             code_snippet: matched_line_text,
             category: cand.category,
             severity: cand.severity,
@@ -130,15 +149,19 @@ pub fn filter_findings(
         };
 
         if route_to_inline {
-            valid_inline.push(validated);
+            raw_inline.push(validated);
         } else {
-            valid_fallback.push(validated);
+            raw_fallback.push(validated);
         }
     }
 
-    // Sort highest severity first.
-    valid_inline.sort_by_key(|a| std::cmp::Reverse(a.severity));
-    valid_fallback.sort_by_key(|a| std::cmp::Reverse(a.severity));
+    // Sort highest severity first before Stage 5 grouping so highest-severity item becomes anchor.
+    raw_inline.sort_by_key(|a| std::cmp::Reverse(a.severity));
+    raw_fallback.sort_by_key(|a| std::cmp::Reverse(a.severity));
+
+    // Stage 5: Intra-PR grouping of repeated patterns within the same file & category.
+    let mut valid_inline = group_intra_pr(raw_inline, &mut trace);
+    let mut valid_fallback = group_intra_pr(raw_fallback, &mut trace);
 
     // Stage 7b: Enforce max_comments across inline + fallback (prioritizing inline).
     let mut budget = config.max_comments;
@@ -201,7 +224,57 @@ pub fn filter_findings(
     }
 }
 
-/// Formats an individual inline PR comment using GitHub-native Markdown alerts without repeating the bot name.
+fn group_intra_pr(items: Vec<ValidatedFinding>, trace: &mut FilterTrace) -> Vec<ValidatedFinding> {
+    let mut grouped: Vec<ValidatedFinding> = Vec::new();
+
+    for cand in items {
+        let existing_anchor = grouped.iter_mut().find(|anchor| {
+            anchor.path == cand.path
+                && anchor.category == cand.category
+                && (anchor.fingerprint == cand.fingerprint
+                    || messages_share_pattern(&anchor.message, &cand.message))
+        });
+
+        if let Some(anchor) = existing_anchor {
+            if cand.line != anchor.line && !anchor.also_at_lines.contains(&cand.line) {
+                anchor.also_at_lines.push(cand.line);
+                anchor.also_at_lines.sort_unstable();
+            }
+            trace.grouped_intra_pr += 1;
+            trace.drops.push(DroppedFinding {
+                path: cand.path,
+                line: cand.line,
+                reason: DropReason::GroupedIntraPr,
+            });
+        } else {
+            grouped.push(cand);
+        }
+    }
+
+    grouped
+}
+
+/// Checks if two finding messages in the same file/category describe the same repeated bug pattern
+/// (>= 60% Jaccard overlap on significant words of length >= 4).
+fn messages_share_pattern(a: &str, b: &str) -> bool {
+    let words_a: HashSet<String> = significant_words(a);
+    let words_b: HashSet<String> = significant_words(b);
+    if words_a.len() < 3 || words_b.len() < 3 {
+        return a.trim().eq_ignore_ascii_case(b.trim());
+    }
+    let inter = words_a.intersection(&words_b).count();
+    let union = words_a.union(&words_b).count();
+    union > 0 && (inter * 100 / union) >= 60
+}
+
+fn significant_words(s: &str) -> HashSet<String> {
+    s.split(|c: char| !c.is_alphanumeric() && c != '_')
+        .map(str::to_lowercase)
+        .filter(|w| w.len() >= 4)
+        .collect()
+}
+
+/// Formats an individual inline PR comment using GitHub-native Markdown alerts and a hidden fingerprint marker.
 pub fn format_inline_comment(finding: &ValidatedFinding, language: &str) -> String {
     let is_es = is_spanish(language);
     let (alert, sev_icon, sev_label) = match finding.severity {
@@ -211,11 +284,7 @@ pub fn format_inline_comment(finding: &ValidatedFinding, language: &str) -> Stri
         crate::types::Severity::Low => ("NOTE", "🔵", "Low"),
     };
 
-    let cat_label = match (finding.category, is_es) {
-        (crate::types::FindingCategory::Bug, _) => "bug",
-        (crate::types::FindingCategory::EdgeCase, _) => "edge_case",
-        (crate::types::FindingCategory::Other, _) => "other",
-    };
+    let cat_label = finding.category.as_str();
     let scenario_label = if is_es {
         "Escenario de fallo"
     } else {
@@ -232,16 +301,34 @@ pub fn format_inline_comment(finding: &ValidatedFinding, language: &str) -> Stri
         "<sub>Suppress false positives by adding `guardian-ignore` on this line.</sub>"
     };
 
+    let also_lines_note = if finding.also_at_lines.is_empty() {
+        String::new()
+    } else {
+        let joined = finding
+            .also_at_lines
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        if is_es {
+            format!(" *(también en línea(s): {joined})*")
+        } else {
+            format!(" *(also on line(s): {joined})*")
+        }
+    };
+
     let msg_quoted = quote_multiline(&finding.message);
     let scenario_quoted = quote_multiline(&finding.scenario);
 
     let mut body = format!(
-        "> [!{alert}]\n\
-         > {sev_icon} **{sev_label}** · `{cat_label}`\n\
+        "{fp_marker}\n\
+         > [!{alert}]\n\
+         > {sev_icon} **{sev_label}** · `{cat_label}`{also_lines_note}\n\
          >\n\
          > {msg_quoted}\n\
          >\n\
          > **{scenario_label}:** `{scenario_quoted}`\n",
+        fp_marker = format_fp_marker(&finding.fingerprint),
     );
 
     if let Some(sugg) = &finding.suggestion {
@@ -262,6 +349,7 @@ pub fn format_pr_summary(
     reviewed_files: usize,
     inline_count: usize,
     fallback_findings: &[ValidatedFinding],
+    deduplicated_count: usize,
     model_name: &str,
     language: &str,
 ) -> String {
@@ -273,8 +361,18 @@ pub fn format_pr_summary(
             "TIP",
             if is_es { "Limpio" } else { "Clean" },
             if is_es {
+                if deduplicated_count > 0 {
+                    format!(
+                        "Sin hallazgos nuevos en **{reviewed_files}** archivo(s) revisado(s) (*{deduplicated_count} ya reportado(s) previamente*)."
+                    )
+                } else {
+                    format!(
+                        "Sin bugs lógicos ni *edge cases* de alta confianza en **{reviewed_files}** archivo(s) revisado(s)."
+                    )
+                }
+            } else if deduplicated_count > 0 {
                 format!(
-                    "Sin bugs lógicos ni *edge cases* de alta confianza en **{reviewed_files}** archivo(s) revisado(s)."
+                    "No new findings across **{reviewed_files}** reviewed file(s) (*{deduplicated_count} previously reported*)."
                 )
             } else {
                 format!(
@@ -291,11 +389,11 @@ pub fn format_pr_summary(
             },
             if is_es {
                 format!(
-                    "Se detectaron **{total}** hallazgo(s) de alta confianza en **{reviewed_files}** archivo(s) revisado(s)."
+                    "Se detectaron **{total}** hallazgo(s) nuevo(s) de alta confianza en **{reviewed_files}** archivo(s) revisado(s)."
                 )
             } else {
                 format!(
-                    "Detected **{total}** high-confidence finding(s) across **{reviewed_files}** reviewed file(s)."
+                    "Detected **{total}** new high-confidence finding(s) across **{reviewed_files}** reviewed file(s)."
                 )
             },
         ),
@@ -342,13 +440,14 @@ pub fn format_pr_summary(
     } else {
         "Run details"
     };
-    let (h_metric, h_val, r_status, r_files, r_inline, r_model) = if is_es {
+    let (h_metric, h_val, r_status, r_files, r_inline, r_dedup, r_model) = if is_es {
         (
             "Métrica",
             "Valor",
             "Estado",
             "Archivos revisados",
-            "Comentarios inline",
+            "Comentarios inline nuevos",
+            "Duplicados omitidos",
             "Modelo",
         )
     } else {
@@ -357,9 +456,16 @@ pub fn format_pr_summary(
             "Value",
             "Status",
             "Files reviewed",
-            "Inline comments",
+            "New inline comments",
+            "Deduplicated skipped",
             "Model",
         )
+    };
+
+    let dedup_row = if deduplicated_count > 0 {
+        format!("> | **{r_dedup}** | {deduplicated_count} |\n")
+    } else {
+        String::new()
     };
 
     let mut out = format!(
@@ -377,6 +483,7 @@ pub fn format_pr_summary(
          > | **{r_status}** | {status_label} |\n\
          > | **{r_files}** | {reviewed_files} |\n\
          > | **{r_inline}** | {inline_count} |\n\
+         {dedup_row}\
          > | **{r_model}** | `{model_name}` |\n\
          > </details>\n"
     );
@@ -391,7 +498,8 @@ pub fn format_pr_summary(
         out.push_str(&format!("\n{fallback_heading}\n\n"));
         for f in fallback_findings {
             out.push_str(&format!(
-                "- **`{path}:{line}`** `{sev}` · `{cat}`: {msg} *({scen_lbl}: {scenario})*\n",
+                "- {fp} **`{path}:{line}`** `{sev}` · `{cat}`: {msg} *({scen_lbl}: {scenario})*\n",
+                fp = format_fp_marker(&f.fingerprint),
                 path = f.path,
                 line = f.line,
                 sev = f.severity.as_str().to_uppercase(),
@@ -417,14 +525,6 @@ pub fn format_pr_summary(
     out
 }
 
-fn is_spanish(language: &str) -> bool {
-    language.trim().to_ascii_lowercase().starts_with("es")
-}
-
-fn quote_multiline(text: &str) -> String {
-    text.trim().replace('\n', "\n> ")
-}
-
 fn has_concrete_scenario(scenario: &str) -> bool {
     let trimmed = scenario.trim();
     if trimmed.len() < 6 {
@@ -437,6 +537,14 @@ fn has_concrete_scenario(scenario: &str) -> bool {
     )
 }
 
+fn is_spanish(language: &str) -> bool {
+    language.trim().to_ascii_lowercase().starts_with("es")
+}
+
+fn quote_multiline(text: &str) -> String {
+    text.trim().replace('\n', "\n> ")
+}
+
 fn has_guardian_ignore(line: &str) -> bool {
     line.contains("guardian-ignore")
 }
@@ -445,16 +553,19 @@ fn has_guardian_ignore(line: &str) -> bool {
 mod tests {
     use super::*;
     use crate::diff::parse_unified_diff;
+    use crate::fingerprint::extract_fingerprints;
     use crate::types::{FindingCategory, Severity};
 
     const DIFF: &str = "\
 diff --git a/src/lib.rs b/src/lib.rs
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -1,3 +1,5 @@
- pub fn divide(a: i64, b: i64) -> i64 {
+@@ -1,3 +1,7 @@
+ pub fn divide(a: i64, b: i64, c: i64) -> i64 {
 +    let _x = a / b; // guardian-ignore
-+    a / b
++    let y = a / b;
++    let z = c / b;
++    y + z
  }
 ";
 
@@ -467,50 +578,60 @@ diff --git a/src/lib.rs b/src/lib.rs
             severity: Severity::High,
             introduced_by_change: true,
             scenario: "When b == 0, integer division panics at runtime.".to_string(),
-            message: "Guard against b == 0 before dividing.".to_string(),
+            message: "Guard against b == 0 before integer division.".to_string(),
             suggestion: None,
         }
     }
 
     #[test]
-    fn funnel_enforces_diff_validation_ignore_and_caps() {
+    fn funnel_enforces_validation_grouping_dedup_ignore_and_caps() {
         let config = ReviewConfig {
-            max_comments: 1,
+            max_comments: 2,
             ..ReviewConfig::default()
         };
         let parsed = parse_unified_diff(DIFF, &config);
 
-        let mut hallucinated = base_finding(99, "nonexistent_call()");
-        hallucinated.severity = Severity::Critical;
-
+        let hallucinated = base_finding(99, "nonexistent_call()");
         let ignored = base_finding(2, "let _x = a / b; // guardian-ignore");
-
-        let mut legacy = base_finding(3, "a / b");
+        let mut legacy = base_finding(3, "let y = a / b;");
         legacy.introduced_by_change = false;
 
-        let valid_high = base_finding(3, "a / b");
-        let mut valid_medium = base_finding(3, "a / b");
-        valid_medium.severity = Severity::Medium;
+        // Two findings in the same file/category with the same pattern -> Stage 5 merges line 4 into line 3!
+        let valid_line_3 = base_finding(3, "let y = a / b;");
+        let valid_line_4 = base_finding(4, "let z = c / b;");
 
         let res = filter_findings(
-            vec![hallucinated, ignored, legacy, valid_medium, valid_high],
+            vec![hallucinated, ignored, legacy, valid_line_3, valid_line_4],
             &parsed,
             &config,
+            &HashSet::new(),
         );
 
         assert_eq!(res.trace.generated, 5);
         assert_eq!(res.trace.dropped_outside_diff, 1);
         assert_eq!(res.trace.dropped_ignored_inline, 1);
         assert_eq!(res.trace.dropped_legacy, 1);
-        assert_eq!(res.trace.dropped_over_max_comments, 1);
+        assert_eq!(res.trace.grouped_intra_pr, 1);
         assert_eq!(res.inline_findings.len(), 1);
-        assert_eq!(res.inline_findings[0].severity, Severity::High);
+        assert_eq!(res.inline_findings[0].line, 3);
+        assert_eq!(res.inline_findings[0].also_at_lines, vec![4]);
 
         let inline_md = format_inline_comment(&res.inline_findings[0], "es");
-        assert!(inline_md.starts_with("> [!WARNING]\n> 🟠 **High** · `edge_case`"));
-        assert!(inline_md.contains("**Escenario de fallo:**"));
+        assert!(inline_md
+            .contains("> [!WARNING]\n> 🟠 **High** · `edge_case` *(también en línea(s): 4)*"));
 
-        let summary_md = format_pr_summary(&res.status, 1, 1, &[], "qwen2.5-coder:14b", "es");
-        assert!(summary_md.contains("> [!IMPORTANT]\n> ### 🛡️ Guardian · Revisión de Código"));
+        // Extract fingerprint from formatted comment and verify Stage 6 suppresses it on re-run!
+        let existing_fps: HashSet<String> = extract_fingerprints(&inline_md).into_iter().collect();
+        assert_eq!(existing_fps.len(), 1);
+
+        let rerun = filter_findings(
+            vec![base_finding(3, "let y = a / b;")],
+            &parsed,
+            &config,
+            &existing_fps,
+        );
+        assert_eq!(rerun.trace.dropped_duplicate_existing, 1);
+        assert!(rerun.inline_findings.is_empty());
+        assert_eq!(rerun.status, ReviewStatus::ReviewedClean);
     }
 }

@@ -1,0 +1,8 @@
+{
+  "id": "08-clean-ts-sum",
+  "kind": "clean",
+  "language": "typescript",
+  "pr_title": "feat: safe cart reduce",
+  "pr_description": "Use Array.reduce with initial 0.",
+  "expected_findings": []
+}

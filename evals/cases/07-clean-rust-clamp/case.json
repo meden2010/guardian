@@ -1,0 +1,8 @@
+{
+  "id": "07-clean-rust-clamp",
+  "kind": "clean",
+  "language": "rust",
+  "pr_title": "feat: add bounded percentage helper",
+  "pr_description": "Clamp percentage between 0 and 100 safely.",
+  "expected_findings": []
+}

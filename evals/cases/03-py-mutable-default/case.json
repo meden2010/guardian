@@ -1,0 +1,15 @@
+{
+  "id": "03-py-mutable-default",
+  "kind": "bug",
+  "language": "python",
+  "pr_title": "feat: add audit tag helper",
+  "pr_description": "Append normalized audit tag to history list.",
+  "expected_findings": [
+    {
+      "path": "src/tags.py",
+      "line_start": 1,
+      "line_end": 3,
+      "description": "Mutable default list argument shared across calls"
+    }
+  ]
+}

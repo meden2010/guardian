@@ -1,0 +1,15 @@
+{
+  "id": "06-py-zero-quantity",
+  "kind": "bug",
+  "language": "python",
+  "pr_title": "feat: add unit price helper",
+  "pr_description": "Compute rounded unit price.",
+  "expected_findings": [
+    {
+      "path": "src/pricing.py",
+      "line_start": 3,
+      "line_end": 4,
+      "description": "ZeroDivisionError when quantity == 0"
+    }
+  ]
+}

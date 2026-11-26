@@ -1,0 +1,15 @@
+{
+  "id": "05-ts-unchecked-null",
+  "kind": "bug",
+  "language": "typescript",
+  "pr_title": "feat: normalize user email",
+  "pr_description": "Trim and lowercase optional user email.",
+  "expected_findings": [
+    {
+      "path": "src/profile.ts",
+      "line_start": 1,
+      "line_end": 3,
+      "description": "Unchecked null/undefined dereference on email.trim()"
+    }
+  ]
+}

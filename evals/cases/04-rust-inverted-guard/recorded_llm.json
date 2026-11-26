@@ -1,0 +1,15 @@
+{
+  "findings": [
+    {
+      "path": "src/auth.rs",
+      "line": 2,
+      "code_snippet": "if is_token_valid {",
+      "category": "bug",
+      "severity": "critical",
+      "introduced_by_change": true,
+      "scenario": "is_token_valid = false retorna Ok(()) y is_token_valid = true retorna Err(\"unauthorized\")",
+      "message": "La condición de autenticación está invertida: bloquea tokens válidos y autoriza tokens inválidos.",
+      "suggestion": "if !is_token_valid {"
+    }
+  ]
+}
