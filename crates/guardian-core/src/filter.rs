@@ -201,16 +201,21 @@ pub fn filter_findings(
     }
 }
 
-/// Formats an individual inline PR comment using GitHub-native Markdown alerts and Guardian branding.
+/// Formats an individual inline PR comment using GitHub-native Markdown alerts without repeating the bot name.
 pub fn format_inline_comment(finding: &ValidatedFinding, language: &str) -> String {
     let is_es = is_spanish(language);
-    let alert = match finding.severity {
-        crate::types::Severity::Critical => "CAUTION",
-        crate::types::Severity::High => "WARNING",
-        crate::types::Severity::Medium => "IMPORTANT",
-        crate::types::Severity::Low => "NOTE",
+    let (alert, sev_icon, sev_label) = match finding.severity {
+        crate::types::Severity::Critical => ("CAUTION", "🔴", "Critical"),
+        crate::types::Severity::High => ("WARNING", "🟠", "High"),
+        crate::types::Severity::Medium => ("IMPORTANT", "🟣", "Medium"),
+        crate::types::Severity::Low => ("NOTE", "🔵", "Low"),
     };
 
+    let cat_label = match (finding.category, is_es) {
+        (crate::types::FindingCategory::Bug, _) => "bug",
+        (crate::types::FindingCategory::EdgeCase, _) => "edge_case",
+        (crate::types::FindingCategory::Other, _) => "other",
+    };
     let scenario_label = if is_es {
         "Escenario de fallo"
     } else {
@@ -222,9 +227,9 @@ pub fn format_inline_comment(finding: &ValidatedFinding, language: &str) -> Stri
         "💡 Suggested fix"
     };
     let footer = if is_es {
-        "<sub>🛡️ Revisado por **Guardian** · Silencia falsos positivos agregando `guardian-ignore` en esta línea.</sub>"
+        "<sub>Silencia falsos positivos agregando `guardian-ignore` en esta línea.</sub>"
     } else {
-        "<sub>🛡️ Reviewed by **Guardian** · Suppress false positives by adding `guardian-ignore` on this line.</sub>"
+        "<sub>Suppress false positives by adding `guardian-ignore` on this line.</sub>"
     };
 
     let msg_quoted = quote_multiline(&finding.message);
@@ -232,13 +237,11 @@ pub fn format_inline_comment(finding: &ValidatedFinding, language: &str) -> Stri
 
     let mut body = format!(
         "> [!{alert}]\n\
-         > ### 🛡️ Guardian · `{sev}` · `{cat}`\n\
+         > {sev_icon} **{sev_label}** · `{cat_label}`\n\
          >\n\
          > {msg_quoted}\n\
          >\n\
-         > **{scenario_label}:** {scenario_quoted}\n",
-        sev = finding.severity.as_str().to_uppercase(),
-        cat = finding.category.as_str(),
+         > **{scenario_label}:** `{scenario_quoted}`\n",
     );
 
     if let Some(sugg) = &finding.suggestion {
@@ -248,7 +251,7 @@ pub fn format_inline_comment(finding: &ValidatedFinding, language: &str) -> Stri
         ));
     }
 
-    body.push_str("\n---\n");
+    body.push('\n');
     body.push_str(footer);
     body
 }
@@ -504,7 +507,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert_eq!(res.inline_findings[0].severity, Severity::High);
 
         let inline_md = format_inline_comment(&res.inline_findings[0], "es");
-        assert!(inline_md.starts_with("> [!WARNING]\n> ### 🛡️ Guardian · `HIGH` · `edge_case`"));
+        assert!(inline_md.starts_with("> [!WARNING]\n> 🟠 **High** · `edge_case`"));
         assert!(inline_md.contains("**Escenario de fallo:**"));
 
         let summary_md = format_pr_summary(&res.status, 1, 1, &[], "qwen2.5-coder:14b", "es");
