@@ -1,0 +1,11 @@
+diff --git a/src/checkout.ts b/src/checkout.ts
+--- /dev/null
++++ b/src/checkout.ts
+@@ -0,0 +1,7 @@
++export function sumCart(items: { price: number; qty: number }[]): number {
++  let subtotal = 0;
++  for (let i = 0; i <= items.length; i++) {
++    subtotal += items[i].price * items[i].qty;
++  }
++  return subtotal;
++}

@@ -2,19 +2,29 @@
 
 > A low-noise, zero-infra, BYOK open-source PR code reviewer in Rust that only comments logical bugs and edge cases it can back with a concrete failure scenario.
 
-*(Status: **Phase 1 (`v0.1`)** — End-to-end vertical slice: diff parsing, secret redaction, OpenAI-compatible LLM review, deterministic diff validation, and atomic GitHub PR comments.)*
+*(Status: **Phase 2 (`v0.2` part 1)** — 7-stage deterministic noise funnel, SHA-256 cross-commit deduplication, intra-PR pattern grouping, `--record`/`--replay`, and `guardian eval` benchmark suite.)*
 
-## Quick Local Usage (`v0.1`)
+## Quick Local Usage (`v0.2`)
 
 ```bash
-# Check environment and LLM connectivity (e.g. local Ollama over Tailscale/LAN)
+# Run Level A deterministic offline benchmark suite (zero network, <50ms)
+cargo run -p guardian-pr-cli -- eval --offline
+
+# Run Level B live benchmark suite against local Ollama over Tailscale/LAN
+cargo run -p guardian-pr-cli -- eval \
+  --base-url http://100.82.189.71:11434/v1 \
+  --model qwen2.5-coder:7b \
+  --allow-insecure-http \
+  --language es
+
+# Check environment and LLM connectivity
 cargo run -p guardian-pr-cli -- doctor \
   --base-url http://100.82.189.71:11434/v1 \
   --model qwen2.5-coder:14b \
   --allow-insecure-http \
   --check-network
 
-# Dry-run review on a local unified diff
+# Dry-run review on a local unified diff (supports --record / --replay)
 cargo run -p guardian-pr-cli -- review \
   --diff-file evals/smoke/div_by_zero.diff \
   --base-url http://100.82.189.71:11434/v1 \
@@ -23,7 +33,7 @@ cargo run -p guardian-pr-cli -- review \
   --language es \
   --dry-run
 
-# Review and publish on a real GitHub PR
+# Review and publish on a real GitHub PR (with automatic SHA-256 deduplication)
 GITHUB_TOKEN=$(gh auth token) cargo run -p guardian-pr-cli -- review \
   --pr meden2010/guardian#1 \
   --base-url http://100.82.189.71:11434/v1 \

@@ -1,0 +1,8 @@
+{
+  "id": "09-clean-py-guard",
+  "kind": "clean",
+  "language": "python",
+  "pr_title": "feat: add safe mean calculation",
+  "pr_description": "Validate non-empty sequence before division.",
+  "expected_findings": []
+}

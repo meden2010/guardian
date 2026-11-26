@@ -1,0 +1,10 @@
+diff --git a/src/auth.rs b/src/auth.rs
+--- /dev/null
++++ b/src/auth.rs
+@@ -0,0 +1,6 @@
++pub fn ensure_authenticated(is_token_valid: bool) -> Result<(), &'static str> {
++    if is_token_valid {
++        return Err("unauthorized");
++    }
++    Ok(())
++}

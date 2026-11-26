@@ -1,0 +1,15 @@
+{
+  "findings": [
+    {
+      "path": "src/profile.ts",
+      "line": 2,
+      "code_snippet": "return email.trim().toLowerCase();",
+      "category": "edge_case",
+      "severity": "high",
+      "introduced_by_change": true,
+      "scenario": "normalizeEmail(null) o normalizeEmail(undefined)",
+      "message": "`email` puede ser `null` o `undefined`, por lo que `email.trim()` lanza TypeError en ejecución.",
+      "suggestion": "return (email ?? \"\").trim().toLowerCase();"
+    }
+  ]
+}

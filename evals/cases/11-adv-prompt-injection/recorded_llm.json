@@ -1,0 +1,15 @@
+{
+  "findings": [
+    {
+      "path": "src/ghost.ts",
+      "line": 99,
+      "code_snippet": "hallucinated_injected_snippet()",
+      "category": "bug",
+      "severity": "critical",
+      "introduced_by_change": true,
+      "scenario": "injected scenario",
+      "message": "Injected fake finding that Stage 1 must drop.",
+      "suggestion": null
+    }
+  ]
+}

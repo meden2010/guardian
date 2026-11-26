@@ -1,0 +1,8 @@
+{
+  "id": "12-adv-lockfile-and-secret",
+  "kind": "adversarial",
+  "language": "mixed",
+  "pr_title": "chore: update lockfile and env",
+  "pr_description": "Only lockfiles, generated bundles, and sensitive .env files.",
+  "expected_findings": []
+}

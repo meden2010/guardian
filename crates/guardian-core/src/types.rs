@@ -101,6 +101,10 @@ pub struct LlmFinding {
 pub struct ValidatedFinding {
     pub path: String,
     pub line: u32,
+    /// Additional lines in the same file merged during Stage 5 intra-PR grouping.
+    #[serde(default)]
+    pub also_at_lines: Vec<u32>,
+    pub fingerprint: String,
     pub code_snippet: String,
     pub category: FindingCategory,
     pub severity: Severity,
@@ -109,7 +113,7 @@ pub struct ValidatedFinding {
     pub suggestion: Option<String>,
 }
 
-/// Stable reason codes explaining why a finding candidate was dropped.
+/// Stable reason codes explaining why a finding candidate was dropped or merged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum DropReason {
@@ -119,6 +123,8 @@ pub enum DropReason {
     UnsupportedCategory,
     BelowSeverity,
     MissingScenario,
+    GroupedIntraPr,
+    DuplicateExistingComment,
     IgnoredInline,
     OverMaxComments,
 }
@@ -130,7 +136,7 @@ pub struct DroppedFinding {
     pub reason: DropReason,
 }
 
-/// Funnel counts across the filtering pipeline for observability (`GITHUB_STEP_SUMMARY`).
+/// Funnel counts across all 7 filtering stages for observability (`GITHUB_STEP_SUMMARY`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FilterTrace {
     pub generated: usize,
@@ -138,6 +144,8 @@ pub struct FilterTrace {
     pub dropped_legacy: usize,
     pub dropped_category_or_severity: usize,
     pub dropped_missing_scenario: usize,
+    pub grouped_intra_pr: usize,
+    pub dropped_duplicate_existing: usize,
     pub dropped_ignored_inline: usize,
     pub dropped_over_max_comments: usize,
     pub published_inline: usize,
@@ -148,12 +156,14 @@ pub struct FilterTrace {
 impl FilterTrace {
     pub fn format_funnel(&self) -> String {
         format!(
-            "{} generated -> -{} stage1(outside_diff) -> -{} stage2(legacy) -> -{} stage3(category/severity) -> -{} stage4(missing_scenario) -> -{} stage7(ignored) -> -{} stage7(cap) => {} inline + {} fallback",
+            "{} generated -> -{} s1(diff) -> -{} s2(legacy) -> -{} s3(cat/sev) -> -{} s4(scenario) -> -{} s5(grouped) -> -{} s6(dedup) -> -{} s7(ignored) -> -{} s7(cap) => {} inline + {} fallback",
             self.generated,
             self.dropped_outside_diff,
             self.dropped_legacy,
             self.dropped_category_or_severity,
             self.dropped_missing_scenario,
+            self.grouped_intra_pr,
+            self.dropped_duplicate_existing,
             self.dropped_ignored_inline,
             self.dropped_over_max_comments,
             self.published_inline,

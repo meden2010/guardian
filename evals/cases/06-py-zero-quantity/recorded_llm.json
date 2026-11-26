@@ -1,0 +1,15 @@
+{
+  "findings": [
+    {
+      "path": "src/pricing.py",
+      "line": 4,
+      "code_snippet": "return round(total_amount / quantity, 2)",
+      "category": "edge_case",
+      "severity": "medium",
+      "introduced_by_change": true,
+      "scenario": "total_amount = 10.0, quantity = 0",
+      "message": "No se valida `quantity <= 0`, provocando `ZeroDivisionError` cuando `quantity` es 0.",
+      "suggestion": "if quantity <= 0: raise ValueError('quantity must be positive')"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "id": "02-ts-off-by-one",
+  "kind": "bug",
+  "language": "typescript",
+  "pr_title": "feat: compute cart subtotal",
+  "pr_description": "Sum item prices multiplied by quantity.",
+  "expected_findings": [
+    {
+      "path": "src/checkout.ts",
+      "line_start": 3,
+      "line_end": 5,
+      "description": "Off-by-one loop condition i <= items.length dereferences undefined"
+    }
+  ]
+}

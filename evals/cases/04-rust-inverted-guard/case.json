@@ -1,0 +1,15 @@
+{
+  "id": "04-rust-inverted-guard",
+  "kind": "bug",
+  "language": "rust",
+  "pr_title": "refactor: extract session token check",
+  "pr_description": "Reject invalid session tokens early.",
+  "expected_findings": [
+    {
+      "path": "src/auth.rs",
+      "line_start": 2,
+      "line_end": 4,
+      "description": "Inverted boolean guard rejects valid tokens and accepts invalid ones"
+    }
+  ]
+}

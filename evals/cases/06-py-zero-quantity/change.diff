@@ -1,0 +1,8 @@
+diff --git a/src/pricing.py b/src/pricing.py
+--- /dev/null
++++ b/src/pricing.py
+@@ -0,0 +1,4 @@
++def calculate_unit_price(total_amount: float, quantity: int) -> float:
++    if total_amount < 0:
++        raise ValueError("total_amount cannot be negative")
++    return round(total_amount / quantity, 2)

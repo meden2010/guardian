@@ -33,3 +33,6 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace
+
+      - name: Run Level A deterministic eval suite (offline)
+        run: cargo run -p guardian-pr-cli -- eval --offline

@@ -1,0 +1,15 @@
+{
+  "id": "01-rust-div-by-zero",
+  "kind": "bug",
+  "language": "rust",
+  "pr_title": "perf: simplify invoice seat splitting",
+  "pr_description": "Compute per-seat share and remainder directly.",
+  "expected_findings": [
+    {
+      "path": "src/billing.rs",
+      "line_start": 2,
+      "line_end": 4,
+      "description": "Division/modulo by zero when seats == 0"
+    }
+  ]
+}

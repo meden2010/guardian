@@ -1,0 +1,15 @@
+{
+  "findings": [
+    {
+      "path": "src/checkout.ts",
+      "line": 3,
+      "code_snippet": "for (let i = 0; i <= items.length; i++) {",
+      "category": "bug",
+      "severity": "high",
+      "introduced_by_change": true,
+      "scenario": "items = []",
+      "message": "Condición `i <= items.length` accede fuera de rango (`items[items.length]` es `undefined`) y lanza TypeError.",
+      "suggestion": "for (let i = 0; i < items.length; i++) {"
+    }
+  ]
+}

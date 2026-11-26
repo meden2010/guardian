@@ -1,0 +1,15 @@
+{
+  "findings": [
+    {
+      "path": "src/billing.rs",
+      "line": 2,
+      "code_snippet": "let per_seat = total_cents / seats;",
+      "category": "bug",
+      "severity": "high",
+      "introduced_by_change": true,
+      "scenario": "total_cents = 100, seats = 0",
+      "message": "División por cero cuando `seats` es 0 tras eliminar la guarda previa.",
+      "suggestion": "if seats == 0 { return 0; }"
+    }
+  ]
+}
