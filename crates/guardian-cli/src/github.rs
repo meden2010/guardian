@@ -4,12 +4,31 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use guardian_core::filter::{format_inline_comment, format_pr_summary, SUMMARY_MARKER};
+use guardian_core::filter::{
+    format_enriched_pr_summary, format_inline_comment, format_processing_summary, SummaryReport,
+    SUMMARY_MARKER,
+};
 use guardian_core::fingerprint::extract_fingerprints;
-use guardian_core::types::{PrMetadata, ReviewStatus, ValidatedFinding};
+use guardian_core::types::{PrMetadata, ReviewStatus, SkipFileReason, ValidatedFinding};
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
+
+pub const CHECK_RUN_NAME: &str = "Guardian Review";
+
+pub struct PublishReviewParams<'a> {
+    pub expected_head_sha: &'a str,
+    pub status: &'a ReviewStatus,
+    pub reviewed_files: &'a [String],
+    pub skipped_files: &'a [(String, SkipFileReason)],
+    pub inline_findings: &'a [ValidatedFinding],
+    pub fallback_findings: &'a [ValidatedFinding],
+    pub deduplicated_count: usize,
+    pub resolved_threads_count: usize,
+    pub model_name: &'a str,
+    pub language: &'a str,
+    pub suggestions_enabled: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrRef {
@@ -427,21 +446,139 @@ impl GitHubClient {
         Ok(result)
     }
 
+    /// Starts a native GitHub Check Run (`Guardian Review`) in `in_progress` state.
+    /// Degrades gracefully (`None`) when running with a classic PAT or without `checks: write`.
+    pub async fn start_check_run(&self, pr: &PrRef, head_sha: &str, language: &str) -> Option<u64> {
+        let is_es = language.trim().to_ascii_lowercase().starts_with("es");
+        let (title, summary) = if is_es {
+            (
+                "Analizando Pull Request...",
+                "Guardian está revisando cambios lógicos, contexto AST y *edge cases*.",
+            )
+        } else {
+            (
+                "Analyzing Pull Request...",
+                "Guardian is reviewing logical changes, AST context, and runtime edge cases.",
+            )
+        };
+
+        let url = format!(
+            "{}/repos/{}/{}/check-runs",
+            self.api_base, pr.owner, pr.repo
+        );
+        let payload = serde_json::json!({
+            "name": CHECK_RUN_NAME,
+            "head_sha": head_sha,
+            "status": "in_progress",
+            "output": {
+                "title": title,
+                "summary": summary,
+            }
+        });
+
+        let resp = self
+            .http
+            .post(&url)
+            .header(USER_AGENT, "guardian-pr-reviewer")
+            .header(ACCEPT, "application/vnd.github+json")
+            .header(AUTHORIZATION, format!("Bearer {}", self.token))
+            .json(&payload)
+            .send()
+            .await
+            .ok()?;
+
+        if !resp.status().is_success() {
+            tracing::debug!(
+                status = %resp.status(),
+                "Check Run API unavailable for current token; continuing without native Check Run"
+            );
+            return None;
+        }
+
+        let val: serde_json::Value = resp.json().await.ok()?;
+        val.get("id").and_then(|v| v.as_u64())
+    }
+
+    /// Completes a previously created GitHub Check Run (`Guardian Review`).
+    pub async fn complete_check_run(
+        &self,
+        pr: &PrRef,
+        check_run_id: u64,
+        conclusion: &str,
+        title: &str,
+        summary: &str,
+    ) {
+        let url = format!(
+            "{}/repos/{}/{}/check-runs/{}",
+            self.api_base, pr.owner, pr.repo, check_run_id
+        );
+        let payload = serde_json::json!({
+            "status": "completed",
+            "conclusion": conclusion,
+            "output": {
+                "title": title,
+                "summary": summary,
+            }
+        });
+
+        if let Ok(resp) = self
+            .http
+            .patch(&url)
+            .header(USER_AGENT, "guardian-pr-reviewer")
+            .header(ACCEPT, "application/vnd.github+json")
+            .header(AUTHORIZATION, format!("Bearer {}", self.token))
+            .json(&payload)
+            .send()
+            .await
+        {
+            if !resp.status().is_success() {
+                tracing::warn!(status = %resp.status(), "Failed completing Check Run");
+            }
+        }
+    }
+
+    /// Posts or updates the fixed PR summary comment with the animated `"⏳ Procesando..."` banner.
+    pub async fn publish_processing_state(
+        &self,
+        pr: &PrRef,
+        language: &str,
+        svg_url: Option<&str>,
+    ) -> Result<()> {
+        let body = format_processing_summary(language, svg_url);
+        self.upsert_summary_comment(pr, &body).await
+    }
+
+    /// Best-effort cleanup so a PR comment never stays stuck on `"⏳ Procesando..."` if an error occurs.
+    pub async fn publish_error_summary(
+        &self,
+        pr: &PrRef,
+        reason: &str,
+        model_name: &str,
+        language: &str,
+    ) {
+        let status = ReviewStatus::Error {
+            reason: reason.to_string(),
+        };
+        let md = format_enriched_pr_summary(&SummaryReport {
+            status: &status,
+            reviewed_files: &[],
+            skipped_files: &[],
+            inline_findings: &[],
+            fallback_findings: &[],
+            deduplicated_count: 0,
+            resolved_threads_count: 0,
+            model_name,
+            language,
+        });
+        let _ = self.upsert_summary_comment(pr, &md).await;
+    }
+
     /// Atomically publishes inline review comments + upserts the single fixed summary comment.
     /// Re-verifies `state == "open"` and `head.sha` before posting, and falls back to summary on HTTP 422.
-    #[allow(clippy::too_many_arguments)]
     pub async fn publish_review(
         &self,
         pr: &PrRef,
-        expected_head_sha: &str,
-        status: &ReviewStatus,
-        reviewed_files: usize,
-        inline_findings: &[ValidatedFinding],
-        fallback_findings: &[ValidatedFinding],
-        deduplicated_count: usize,
-        model_name: &str,
-        language: &str,
-        suggestions_enabled: bool,
+        params: &PublishReviewParams<'_>,
     ) -> Result<PublishOutcome> {
         let latest = self.fetch_pr(pr).await?;
         if latest.state != "open" {
@@ -449,26 +586,27 @@ impl GitHubClient {
                 reason: format!("PR is now `{}`", latest.state),
             });
         }
-        if latest.head.sha != expected_head_sha {
+        if latest.head.sha != params.expected_head_sha {
             return Ok(PublishOutcome::AbortedStaleState {
                 reason: format!(
-                    "PR head moved from `{expected_head_sha}` to `{}` during review",
-                    latest.head.sha
+                    "PR head moved from `{}` to `{}` during review",
+                    params.expected_head_sha, latest.head.sha
                 ),
             });
         }
 
-        let mut combined_fallback: Vec<ValidatedFinding> = fallback_findings.to_vec();
+        let mut combined_fallback: Vec<ValidatedFinding> = params.fallback_findings.to_vec();
         let mut inline_posted = 0usize;
 
-        if !inline_findings.is_empty() {
-            let comments: Vec<InlineReviewComment<'_>> = inline_findings
+        if !params.inline_findings.is_empty() {
+            let comments: Vec<InlineReviewComment<'_>> = params
+                .inline_findings
                 .iter()
                 .map(|f| InlineReviewComment {
                     path: &f.path,
                     line: f.line,
                     side: "RIGHT",
-                    body: format_inline_comment(f, language, suggestions_enabled),
+                    body: format_inline_comment(f, params.language, params.suggestions_enabled),
                 })
                 .collect();
 
@@ -477,7 +615,7 @@ impl GitHubClient {
                 self.api_base, pr.owner, pr.repo, pr.number
             );
             let payload = CreateReviewRequest {
-                commit_id: expected_head_sha,
+                commit_id: params.expected_head_sha,
                 event: "COMMENT",
                 comments,
             };
@@ -494,10 +632,10 @@ impl GitHubClient {
                 .context("ERR_GITHUB_NETWORK: failed posting PR review")?;
 
             if resp.status().is_success() {
-                inline_posted = inline_findings.len();
+                inline_posted = params.inline_findings.len();
             } else if resp.status() == StatusCode::UNPROCESSABLE_ENTITY {
                 tracing::warn!("GitHub rejected inline line positions (HTTP 422); routing findings to summary fallback");
-                combined_fallback.extend_from_slice(inline_findings);
+                combined_fallback.extend_from_slice(params.inline_findings);
             } else if resp.status() == StatusCode::FORBIDDEN
                 || resp.status() == StatusCode::UNAUTHORIZED
             {
@@ -510,15 +648,22 @@ impl GitHubClient {
             }
         }
 
-        let summary_md = format_pr_summary(
-            status,
-            reviewed_files,
-            inline_posted,
-            &combined_fallback,
-            deduplicated_count,
-            model_name,
-            language,
-        );
+        let effective_inline = if inline_posted > 0 {
+            params.inline_findings
+        } else {
+            &[]
+        };
+        let summary_md = format_enriched_pr_summary(&SummaryReport {
+            status: params.status,
+            reviewed_files: params.reviewed_files,
+            skipped_files: params.skipped_files,
+            inline_findings: effective_inline,
+            fallback_findings: &combined_fallback,
+            deduplicated_count: params.deduplicated_count,
+            resolved_threads_count: params.resolved_threads_count,
+            model_name: params.model_name,
+            language: params.language,
+        });
         self.upsert_summary_comment(pr, &summary_md).await?;
 
         Ok(PublishOutcome::Published {
@@ -739,23 +884,73 @@ mod tests {
 
         let gh = GitHubClient::new(server.uri(), "test_tok".into()).expect("gh init");
         let pr = PrRef::parse("meden2010/guardian#1").expect("pr");
+        let files = vec!["src/lib.rs".to_string()];
         let outcome = gh
             .publish_review(
                 &pr,
-                "old_sha_111",
-                &ReviewStatus::ReviewedClean,
-                1,
-                &[],
-                &[],
-                0,
-                "qwen2.5-coder:14b",
-                "es",
-                true,
+                &PublishReviewParams {
+                    expected_head_sha: "old_sha_111",
+                    status: &ReviewStatus::ReviewedClean,
+                    reviewed_files: &files,
+                    skipped_files: &[],
+                    inline_findings: &[],
+                    fallback_findings: &[],
+                    deduplicated_count: 0,
+                    resolved_threads_count: 0,
+                    model_name: "qwen2.5-coder:14b",
+                    language: "es",
+                    suggestions_enabled: true,
+                },
             )
             .await
             .expect("publish call");
 
         assert!(matches!(outcome, PublishOutcome::AbortedStaleState { .. }));
+    }
+
+    #[tokio::test]
+    async fn manages_check_run_lifecycle_and_processing_banner() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/repos/meden2010/guardian/check-runs"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": 777})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("PATCH"))
+            .and(path("/repos/meden2010/guardian/check-runs/777"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": 777})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/repos/meden2010/guardian/issues/9/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/repos/meden2010/guardian/issues/9/comments"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": 888})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let gh = GitHubClient::new(server.uri(), "app_tok".into()).expect("gh init");
+        let pr = PrRef::parse("meden2010/guardian#9").expect("pr");
+
+        let check_id = gh.start_check_run(&pr, "sha_999", "es").await;
+        assert_eq!(check_id, Some(777));
+
+        gh.publish_processing_state(&pr, "es", None)
+            .await
+            .expect("processing banner posted");
+
+        gh.complete_check_run(&pr, 777, "success", "Clean", "0 findings")
+            .await;
     }
 
     #[tokio::test]
@@ -813,18 +1008,23 @@ mod tests {
             suggestion: None,
         };
 
+        let files = vec!["src/lib.rs".to_string()];
         let outcome = gh
             .publish_review(
                 &pr,
-                "sha_abc",
-                &ReviewStatus::ReviewedWithFindings,
-                1,
-                &[finding],
-                &[],
-                0,
-                "qwen2.5-coder:14b",
-                "es",
-                true,
+                &PublishReviewParams {
+                    expected_head_sha: "sha_abc",
+                    status: &ReviewStatus::ReviewedWithFindings,
+                    reviewed_files: &files,
+                    skipped_files: &[],
+                    inline_findings: &[finding],
+                    fallback_findings: &[],
+                    deduplicated_count: 0,
+                    resolved_threads_count: 0,
+                    model_name: "qwen2.5-coder:14b",
+                    language: "es",
+                    suggestions_enabled: true,
+                },
             )
             .await
             .expect("422 fallback should succeed");

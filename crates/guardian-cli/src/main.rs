@@ -9,10 +9,11 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use github::{GitHubClient, PrRef, PublishOutcome};
+use github::{GitHubClient, PrRef, PublishOutcome, PublishReviewParams};
 use guardian_core::ast_context::SupportedLanguage;
 use guardian_core::config::{apply_repo_config, parse_repo_config};
 use guardian_core::diff::parse_unified_diff;
+use guardian_core::filter::{format_enriched_pr_summary, SummaryReport};
 use guardian_core::types::{LlmReviewOutput, PrMetadata, ReviewConfig, ReviewStatus, Severity};
 use guardian_core::{finalize_review, prepare_review_with_context, PreparedDiff};
 use llm::{OpenAiCompatibleClient, OpenAiCompatibleConfig, TokenUsage};
@@ -456,9 +457,27 @@ async fn run_review(cmd: Commands, effective_fail_on_error: &mut bool) -> Result
             return Ok(());
         }
 
+        let head_sha = pr_info.head.sha.clone();
+        let check_run_id = if !dry_run {
+            let custom_svg = std::env::var("GUARDIAN_PROCESSING_SVG_URL")
+                .ok()
+                .filter(|s| !s.trim().is_empty());
+            let cid = gh
+                .start_check_run(&pr_ref, &head_sha, &config.language)
+                .await;
+            if let Err(e) = gh
+                .publish_processing_state(&pr_ref, &config.language, custom_svg.as_deref())
+                .await
+            {
+                tracing::warn!(error = %e, "Could not post initial processing banner");
+            }
+            cid
+        } else {
+            None
+        };
+
         let diff_text = gh.fetch_pr_diff(&pr_ref).await?;
         let existing = gh.fetch_existing_fingerprints(&pr_ref).await?;
-        let head_sha = pr_info.head.sha.clone();
 
         // Passively fetch full sources for AST-supported files via GitHub API (no checkout).
         let preview_parsed = parse_unified_diff(&diff_text, &config);
@@ -479,7 +498,7 @@ async fn run_review(cmd: Commands, effective_fail_on_error: &mut bool) -> Result
             existing.fingerprints,
             existing.resolved_threads,
             sources,
-            Some((gh, pr_ref, head_sha)),
+            Some((gh, pr_ref, head_sha, check_run_id)),
         )
     };
 
@@ -493,6 +512,35 @@ async fn run_review(cmd: Commands, effective_fail_on_error: &mut bool) -> Result
                 "Guardian skipped review: {reason} (skipped_files={})",
                 parsed_diff.skipped_files.len()
             );
+            if !dry_run {
+                if let Some((gh, pr_ref, head_sha, check_run_id)) = &gh_ctx {
+                    let skip_status = ReviewStatus::Skipped {
+                        reason: reason.clone(),
+                    };
+                    let _ = gh
+                        .publish_review(
+                            pr_ref,
+                            &PublishReviewParams {
+                                expected_head_sha: head_sha,
+                                status: &skip_status,
+                                reviewed_files: &[],
+                                skipped_files: &parsed_diff.skipped_files,
+                                inline_findings: &[],
+                                fallback_findings: &[],
+                                deduplicated_count: 0,
+                                resolved_threads_count: resolved_threads,
+                                model_name: &model_label,
+                                language: &config.language,
+                                suggestions_enabled: config.suggestions_enabled,
+                            },
+                        )
+                        .await;
+                    if let Some(cid) = check_run_id {
+                        gh.complete_check_run(pr_ref, *cid, "neutral", "Skipped", &reason)
+                            .await;
+                    }
+                }
+            }
             append_step_summary(&format!(
                 "### Guardian Operator Summary\n- **Status:** Skipped (`{reason}`)\n- **Skipped files:** {}\n",
                 parsed_diff.skipped_files.len()
@@ -507,40 +555,80 @@ async fn run_review(cmd: Commands, effective_fail_on_error: &mut bool) -> Result
         } => (parsed_diff, prompt, ast_context_files),
     };
 
-    let (llm_output, usage) = if let Some(replay_dir) = &replay {
-        let replay_file = replay_dir.join("llm_response.json");
-        let raw = fs::read_to_string(&replay_file)
-            .with_context(|| format!("failed reading replay file `{}`", replay_file.display()))?;
-        let out: LlmReviewOutput =
-            serde_json::from_str(&raw).context("invalid JSON in replay file")?;
-        (out, TokenUsage::default())
-    } else {
-        let api_key = std::env::var(&api_key_env)
-            .ok()
-            .filter(|s| !s.trim().is_empty());
-        let llm_client = OpenAiCompatibleClient::new(OpenAiCompatibleConfig {
-            base_url,
-            model: model_label.clone(),
-            api_key,
-            allow_insecure_http,
-            timeout_secs,
-        })?;
-        let stats = llm_client.review(&prompt.system, &prompt.user).await?;
-        if let Some(rec_dir) = &record {
-            fs::create_dir_all(rec_dir)?;
-            let pretty = serde_json::to_string_pretty(&stats.output)?;
-            fs::write(rec_dir.join("llm_response.json"), pretty)?;
+    let llm_result: Result<(LlmReviewOutput, TokenUsage)> = async {
+        if let Some(replay_dir) = &replay {
+            let replay_file = replay_dir.join("llm_response.json");
+            let raw = fs::read_to_string(&replay_file).with_context(|| {
+                format!("failed reading replay file `{}`", replay_file.display())
+            })?;
+            let out: LlmReviewOutput =
+                serde_json::from_str(&raw).context("invalid JSON in replay file")?;
+            Ok((out, TokenUsage::default()))
+        } else {
+            let api_key = std::env::var(&api_key_env)
+                .ok()
+                .filter(|s| !s.trim().is_empty());
+            let llm_client = OpenAiCompatibleClient::new(OpenAiCompatibleConfig {
+                base_url,
+                model: model_label.clone(),
+                api_key,
+                allow_insecure_http,
+                timeout_secs,
+            })?;
+            let stats = llm_client.review(&prompt.system, &prompt.user).await?;
+            if let Some(rec_dir) = &record {
+                fs::create_dir_all(rec_dir)?;
+                let pretty = serde_json::to_string_pretty(&stats.output)?;
+                fs::write(rec_dir.join("llm_response.json"), pretty)?;
+            }
+            Ok((stats.output, stats.usage))
         }
-        (stats.output, stats.usage)
+    }
+    .await;
+
+    let (llm_output, usage) = match llm_result {
+        Ok(pair) => pair,
+        Err(err) => {
+            if !dry_run {
+                if let Some((gh, pr_ref, _, check_run_id)) = &gh_ctx {
+                    let safe_reason = guardian_core::redact::redact_secrets(&format!("{err:#}"));
+                    gh.publish_error_summary(pr_ref, &safe_reason, &model_label, &config.language)
+                        .await;
+                    if let Some(cid) = check_run_id {
+                        gh.complete_check_run(
+                            pr_ref,
+                            *cid,
+                            "neutral",
+                            "Review could not complete",
+                            &safe_reason,
+                        )
+                        .await;
+                    }
+                }
+            }
+            return Err(err);
+        }
     };
 
-    let (filtered, summary_md) = finalize_review(
+    let (filtered, _default_summary_md) = finalize_review(
         llm_output,
         &parsed_diff,
         &config,
         &existing_fps,
         &model_label,
     );
+    let reviewed_paths: Vec<String> = parsed_diff.files.iter().map(|f| f.path.clone()).collect();
+    let summary_md = format_enriched_pr_summary(&SummaryReport {
+        status: &filtered.status,
+        reviewed_files: &reviewed_paths,
+        skipped_files: &parsed_diff.skipped_files,
+        inline_findings: &filtered.inline_findings,
+        fallback_findings: &filtered.summary_fallback_findings,
+        deduplicated_count: filtered.trace.dropped_duplicate_existing,
+        resolved_threads_count: resolved_threads,
+        model_name: &model_label,
+        language: &config.language,
+    });
     let elapsed = started.elapsed();
 
     if dry_run || gh_ctx.is_none() {
@@ -558,19 +646,23 @@ async fn run_review(cmd: Commands, effective_fail_on_error: &mut bool) -> Result
                 f.scenario
             );
         }
-    } else if let Some((gh, pr_ref, head_sha)) = gh_ctx {
+    } else if let Some((gh, pr_ref, head_sha, check_run_id)) = gh_ctx {
         let outcome = gh
             .publish_review(
                 &pr_ref,
-                &head_sha,
-                &filtered.status,
-                parsed_diff.files.len(),
-                &filtered.inline_findings,
-                &filtered.summary_fallback_findings,
-                filtered.trace.dropped_duplicate_existing,
-                &model_label,
-                &config.language,
-                config.suggestions_enabled,
+                &PublishReviewParams {
+                    expected_head_sha: &head_sha,
+                    status: &filtered.status,
+                    reviewed_files: &reviewed_paths,
+                    skipped_files: &parsed_diff.skipped_files,
+                    inline_findings: &filtered.inline_findings,
+                    fallback_findings: &filtered.summary_fallback_findings,
+                    deduplicated_count: filtered.trace.dropped_duplicate_existing,
+                    resolved_threads_count: resolved_threads,
+                    model_name: &model_label,
+                    language: &config.language,
+                    suggestions_enabled: config.suggestions_enabled,
+                },
             )
             .await?;
         match outcome {
@@ -578,6 +670,16 @@ async fn run_review(cmd: Commands, effective_fail_on_error: &mut bool) -> Result
                 inline_posted,
                 fallback_posted,
             } => {
+                let total_posted = inline_posted + fallback_posted;
+                if let Some(cid) = check_run_id {
+                    let (conclusion, title) = if total_posted == 0 {
+                        ("success", "No new high-confidence findings")
+                    } else {
+                        ("neutral", "High-confidence findings reported")
+                    };
+                    gh.complete_check_run(&pr_ref, cid, conclusion, title, &summary_md)
+                        .await;
+                }
                 println!(
                     "Guardian published review on {}#{}: {} inline, {} fallback ({} deduplicated, {} resolved threads respected)",
                     pr_ref.repo,
@@ -589,6 +691,16 @@ async fn run_review(cmd: Commands, effective_fail_on_error: &mut bool) -> Result
                 );
             }
             PublishOutcome::AbortedStaleState { reason } => {
+                if let Some(cid) = check_run_id {
+                    gh.complete_check_run(
+                        &pr_ref,
+                        cid,
+                        "neutral",
+                        "Superseded by newer commit",
+                        &reason,
+                    )
+                    .await;
+                }
                 println!("Guardian aborted publishing stale review: {reason}");
             }
         }

@@ -5,11 +5,27 @@ use std::collections::HashSet;
 use crate::diff::{DiffMatch, ParsedDiff};
 use crate::fingerprint::{compute_fingerprint, format_fp_marker};
 use crate::types::{
-    DropReason, DroppedFinding, FilterTrace, LlmFinding, ReviewConfig, ReviewStatus,
+    DropReason, DroppedFinding, FilterTrace, LlmFinding, ReviewConfig, ReviewStatus, Severity,
     SkipFileReason, ValidatedFinding,
 };
 
 pub const SUMMARY_MARKER: &str = "<!-- guardian:summary:v1 -->";
+
+pub const DEFAULT_PROCESSING_SVG_URL: &str =
+    "https://raw.githubusercontent.com/meden2010/guardian/main/assets/guardian-processing.svg";
+
+/// Structured inputs for rendering the enriched PR summary comment.
+pub struct SummaryReport<'a> {
+    pub status: &'a ReviewStatus,
+    pub reviewed_files: &'a [String],
+    pub skipped_files: &'a [(String, SkipFileReason)],
+    pub inline_findings: &'a [ValidatedFinding],
+    pub fallback_findings: &'a [ValidatedFinding],
+    pub deduplicated_count: usize,
+    pub resolved_threads_count: usize,
+    pub model_name: &'a str,
+    pub language: &'a str,
+}
 
 #[derive(Debug, Clone)]
 pub struct FilteredReview {
@@ -392,39 +408,77 @@ fn is_applicable_code_suggestion(sugg: &str, finding: &ValidatedFinding) -> bool
 }
 
 /// Formats the fixed PR summary comment (`<!-- guardian:summary:v1 -->`) with GitHub Alerts.
-pub fn format_pr_summary(
-    status: &ReviewStatus,
-    reviewed_files: usize,
-    inline_count: usize,
-    fallback_findings: &[ValidatedFinding],
-    deduplicated_count: usize,
-    model_name: &str,
-    language: &str,
-) -> String {
+/// Formats the temporary `"⏳ Procesando..."` PR summary card shown while Guardian runs.
+/// Uses the same `SUMMARY_MARKER` so the final summary replaces it in-place with zero extra comment spam.
+pub fn format_processing_summary(language: &str, svg_url: Option<&str>) -> String {
     let is_es = is_spanish(language);
-    let total = inline_count + fallback_findings.len();
+    let banner_url = svg_url
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+        .unwrap_or(DEFAULT_PROCESSING_SVG_URL);
 
-    let (alert, status_label, headline) = match status {
+    let (title, body, footer) = if is_es {
+        (
+            "🛡️ Guardian · Analizando Pull Request...",
+            "⏳ **Procesando revisión...** Analizando diff, contexto AST y posibles *edge cases*.",
+            format!(
+                "<sub>🛡️ **Guardian** `v{ver}` · Este comentario se actualizará automáticamente al finalizar</sub>",
+                ver = crate::VERSION
+            ),
+        )
+    } else {
+        (
+            "🛡️ Guardian · Analyzing Pull Request...",
+            "⏳ **Review in progress...** Analyzing diff, AST context, and runtime edge cases.",
+            format!(
+                "<sub>🛡️ **Guardian** `v{ver}` · This comment will update automatically when complete</sub>",
+                ver = crate::VERSION
+            ),
+        )
+    };
+
+    format!(
+        "{SUMMARY_MARKER}\n\
+         > [!NOTE]\n\
+         > ### {title}\n\
+         >\n\
+         > {body}\n\
+         >\n\
+         > <img src=\"{banner_url}\" alt=\"Guardian knight slicing incoming bugs\" width=\"336\" height=\"120\" />\n\
+         \n---\n{footer}\n"
+    )
+}
+
+/// Formats the enriched single fixed PR summary comment (`<!-- guardian:summary:v1 -->`).
+pub fn format_enriched_pr_summary(report: &SummaryReport<'_>) -> String {
+    let is_es = is_spanish(report.language);
+    let reviewed_count = report.reviewed_files.len();
+    let inline_count = report.inline_findings.len();
+    let total = inline_count + report.fallback_findings.len();
+
+    let (alert, status_label, headline) = match report.status {
         ReviewStatus::ReviewedClean => (
             "TIP",
             if is_es { "Limpio" } else { "Clean" },
             if is_es {
-                if deduplicated_count > 0 {
+                if report.deduplicated_count > 0 {
                     format!(
-                        "Sin hallazgos nuevos en **{reviewed_files}** archivo(s) revisado(s) (*{deduplicated_count} ya reportado(s) previamente*)."
+                        "Sin hallazgos nuevos en **{reviewed_count}** archivo(s) revisado(s) (*{} ya reportado(s) / resuelto(s)*).",
+                        report.deduplicated_count
                     )
                 } else {
                     format!(
-                        "Sin bugs lógicos ni *edge cases* de alta confianza en **{reviewed_files}** archivo(s) revisado(s)."
+                        "Sin bugs lógicos ni *edge cases* de alta confianza en **{reviewed_count}** archivo(s) revisado(s)."
                     )
                 }
-            } else if deduplicated_count > 0 {
+            } else if report.deduplicated_count > 0 {
                 format!(
-                    "No new findings across **{reviewed_files}** reviewed file(s) (*{deduplicated_count} previously reported*)."
+                    "No new findings across **{reviewed_count}** reviewed file(s) (*{} previously reported / resolved*).",
+                    report.deduplicated_count
                 )
             } else {
                 format!(
-                    "No high-confidence logical bugs or edge cases found across **{reviewed_files}** reviewed file(s)."
+                    "No high-confidence logical bugs or edge cases found across **{reviewed_count}** reviewed file(s)."
                 )
             },
         ),
@@ -437,11 +491,11 @@ pub fn format_pr_summary(
             },
             if is_es {
                 format!(
-                    "Se detectaron **{total}** hallazgo(s) nuevo(s) de alta confianza en **{reviewed_files}** archivo(s) revisado(s)."
+                    "Se detectaron **{total}** hallazgo(s) nuevo(s) de alta confianza en **{reviewed_count}** archivo(s) revisado(s)."
                 )
             } else {
                 format!(
-                    "Detected **{total}** new high-confidence finding(s) across **{reviewed_files}** reviewed file(s)."
+                    "Detected **{total}** new high-confidence finding(s) across **{reviewed_count}** reviewed file(s)."
                 )
             },
         ),
@@ -478,6 +532,33 @@ pub fn format_pr_summary(
         ),
     };
 
+    // Severity breakdown across inline + fallback findings
+    let mut crit = 0usize;
+    let mut high = 0usize;
+    let mut med = 0usize;
+    let mut low = 0usize;
+    for f in report
+        .inline_findings
+        .iter()
+        .chain(report.fallback_findings.iter())
+    {
+        match f.severity {
+            Severity::Critical => crit += 1,
+            Severity::High => high += 1,
+            Severity::Medium => med += 1,
+            Severity::Low => low += 1,
+        }
+    }
+
+    let severity_block = if total > 0 {
+        let sev_label = if is_es { "Severidad" } else { "Severity" };
+        format!(
+            ">\n> **{sev_label}:** 🔴 Critical: **{crit}** · 🟠 High: **{high}** · 🟣 Medium: **{med}** · 🔵 Low: **{low}**\n"
+        )
+    } else {
+        String::new()
+    };
+
     let title = if is_es {
         "🛡️ Guardian · Revisión de Código"
     } else {
@@ -488,30 +569,48 @@ pub fn format_pr_summary(
     } else {
         "Run details"
     };
-    let (h_metric, h_val, r_status, r_files, r_inline, r_dedup, r_model) = if is_es {
-        (
-            "Métrica",
-            "Valor",
-            "Estado",
-            "Archivos revisados",
-            "Comentarios inline nuevos",
-            "Duplicados omitidos",
-            "Modelo",
-        )
-    } else {
-        (
-            "Metric",
-            "Value",
-            "Status",
-            "Files reviewed",
-            "New inline comments",
-            "Deduplicated skipped",
-            "Model",
-        )
-    };
+    let (h_metric, h_val, r_status, r_files, r_skipped, r_inline, r_dedup, r_resolved, r_model) =
+        if is_es {
+            (
+                "Métrica",
+                "Valor",
+                "Estado",
+                "Archivos revisados",
+                "Archivos omitidos",
+                "Comentarios inline nuevos",
+                "Duplicados omitidos",
+                "Hilos resueltos respetados",
+                "Modelo",
+            )
+        } else {
+            (
+                "Metric",
+                "Value",
+                "Status",
+                "Files reviewed",
+                "Skipped files",
+                "New inline comments",
+                "Deduplicated skipped",
+                "Resolved threads respected",
+                "Model",
+            )
+        };
 
-    let dedup_row = if deduplicated_count > 0 {
-        format!("> | **{r_dedup}** | {deduplicated_count} |\n")
+    let skipped_row = if !report.skipped_files.is_empty() {
+        format!("> | **{r_skipped}** | {} |\n", report.skipped_files.len())
+    } else {
+        String::new()
+    };
+    let dedup_row = if report.deduplicated_count > 0 {
+        format!("> | **{r_dedup}** | {} |\n", report.deduplicated_count)
+    } else {
+        String::new()
+    };
+    let resolved_row = if report.resolved_threads_count > 0 {
+        format!(
+            "> | **{r_resolved}** | {} |\n",
+            report.resolved_threads_count
+        )
     } else {
         String::new()
     };
@@ -522,6 +621,7 @@ pub fn format_pr_summary(
          > ### {title}\n\
          >\n\
          > {headline}\n\
+         {severity_block}\
          >\n\
          > <details>\n\
          > <summary>⚙️ {details_title}</summary>\n\
@@ -529,14 +629,46 @@ pub fn format_pr_summary(
          > | {h_metric} | {h_val} |\n\
          > | :--- | :--- |\n\
          > | **{r_status}** | {status_label} |\n\
-         > | **{r_files}** | {reviewed_files} |\n\
+         > | **{r_files}** | {reviewed_count} |\n\
+         {skipped_row}\
          > | **{r_inline}** | {inline_count} |\n\
          {dedup_row}\
+         {resolved_row}\
          > | **{r_model}** | `{model_name}` |\n\
-         > </details>\n"
+         > </details>\n",
+        model_name = report.model_name
     );
 
-    if !fallback_findings.is_empty() {
+    if !report.reviewed_files.is_empty() {
+        let rev_lbl = if is_es {
+            format!("📂 Archivos revisados ({reviewed_count})")
+        } else {
+            format!("📂 Reviewed files ({reviewed_count})")
+        };
+        out.push_str(&format!("\n<details>\n<summary>{rev_lbl}</summary>\n\n"));
+        for path in report.reviewed_files {
+            out.push_str(&format!("- `{path}`\n"));
+        }
+        out.push_str("\n</details>\n");
+    }
+
+    if !report.skipped_files.is_empty() {
+        let skip_lbl = if is_es {
+            format!("⏭️ Archivos omitidos ({})", report.skipped_files.len())
+        } else {
+            format!("⏭️ Skipped files ({})", report.skipped_files.len())
+        };
+        out.push_str(&format!("\n<details>\n<summary>{skip_lbl}</summary>\n\n"));
+        for (path, reason) in report.skipped_files {
+            out.push_str(&format!(
+                "- `{path}` *({})*\n",
+                format_skip_file_reason(*reason, is_es)
+            ));
+        }
+        out.push_str("\n</details>\n");
+    }
+
+    if !report.fallback_findings.is_empty() {
         let fallback_heading = if is_es {
             "#### Hallazgos adicionales (fuera de rango inline del diff)"
         } else {
@@ -544,7 +676,7 @@ pub fn format_pr_summary(
         };
         let scen_lbl = if is_es { "Escenario" } else { "Scenario" };
         out.push_str(&format!("\n{fallback_heading}\n\n"));
-        for f in fallback_findings {
+        for f in report.fallback_findings {
             out.push_str(&format!(
                 "- {fp} **`{path}:{line}`** `{sev}` · `{cat}`: {msg} *({scen_lbl}: {scenario})*\n",
                 fp = format_fp_marker(&f.fingerprint),
@@ -571,6 +703,23 @@ pub fn format_pr_summary(
     };
     out.push_str(&footer);
     out
+}
+
+fn format_skip_file_reason(reason: SkipFileReason, is_es: bool) -> &'static str {
+    match (reason, is_es) {
+        (SkipFileReason::Binary, true) => "archivo binario",
+        (SkipFileReason::Binary, false) => "binary file",
+        (SkipFileReason::Lockfile, true) => "lockfile",
+        (SkipFileReason::Lockfile, false) => "lockfile",
+        (SkipFileReason::Generated, true) => "código generado",
+        (SkipFileReason::Generated, false) => "generated code",
+        (SkipFileReason::SensitivePath, true) => "ruta sensible protegida",
+        (SkipFileReason::SensitivePath, false) => "protected sensitive path",
+        (SkipFileReason::ConfiguredIgnore, true) => "excluido por ignore_paths",
+        (SkipFileReason::ConfiguredIgnore, false) => "excluded by ignore_paths",
+        (SkipFileReason::OverMaxFiles, true) => "excede límite max_files",
+        (SkipFileReason::OverMaxFiles, false) => "exceeds max_files limit",
+    }
 }
 
 fn has_concrete_scenario(scenario: &str) -> bool {
@@ -709,5 +858,48 @@ diff --git a/src/lib.rs b/src/lib.rs
         let prose = format_inline_comment(&finding, "es", true);
         assert!(!prose.contains("```suggestion"));
         assert!(prose.contains("<details>"));
+    }
+
+    #[test]
+    fn formats_processing_and_enriched_summary_with_severity_and_file_lists() {
+        let processing = format_processing_summary("es", None);
+        assert!(processing.starts_with(SUMMARY_MARKER));
+        assert!(processing.contains("guardian-processing.svg"));
+        assert!(processing.contains("Procesando revisión"));
+
+        let finding = ValidatedFinding {
+            path: "src/billing.ts".into(),
+            line: 12,
+            also_at_lines: Vec::new(),
+            fingerprint: "v1:abcd".into(),
+            code_snippet: "total / qty".into(),
+            category: FindingCategory::Bug,
+            severity: Severity::Critical,
+            scenario: "qty == 0".into(),
+            message: "Division by zero.".into(),
+            suggestion: None,
+        };
+        let reviewed = vec!["src/billing.ts".to_string()];
+        let skipped = vec![("Cargo.lock".to_string(), SkipFileReason::Lockfile)];
+
+        let summary = format_enriched_pr_summary(&SummaryReport {
+            status: &ReviewStatus::ReviewedWithFindings,
+            reviewed_files: &reviewed,
+            skipped_files: &skipped,
+            inline_findings: &[finding],
+            fallback_findings: &[],
+            deduplicated_count: 2,
+            resolved_threads_count: 1,
+            model_name: "qwen2.5-coder:7b",
+            language: "es",
+        });
+
+        assert!(summary.starts_with(SUMMARY_MARKER));
+        assert!(summary.contains("🔴 Critical: **1**"));
+        assert!(summary.contains("**Duplicados omitidos** | 2"));
+        assert!(summary.contains("**Hilos resueltos respetados** | 1"));
+        assert!(summary.contains("📂 Archivos revisados (1)"));
+        assert!(summary.contains("⏭️ Archivos omitidos (1)"));
+        assert!(summary.contains("`Cargo.lock` *(lockfile)*"));
     }
 }

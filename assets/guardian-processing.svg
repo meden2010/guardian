@@ -1,0 +1,204 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 112 40" width="336" height="120" role="img" aria-label="Guardian knight slicing incoming bugs">
+  <defs>
+    <clipPath id="arena-clip">
+      <rect x="6" y="4" width="100" height="31" rx="2"/>
+    </clipPath>
+    <g id="bug-frame-a" shape-rendering="crispEdges">
+      <path fill="#475569" d="M1 0h1v1h-1zM4 0h1v1h-1zM2 1h2v1h-2zM2 6h1v1h-1zM1 7h1v1h-1zM4 7h1v1h-1zM7 7h1v1h-1zM10 7h1v1h-1zM0 8h1v1h-1zM3 8h1v1h-1zM6 8h1v1h-1zM9 8h1v1h-1z"/>
+      <path fill="#0f172a" d="M5 1h4v1h-4zM1 2h1v1h-1zM4 2h1v1h-1zM9 2h1v1h-1zM0 3h1v1h-1zM3 3h1v1h-1zM10 3h1v1h-1zM0 4h1v1h-1zM3 4h1v1h-1zM11 4h1v1h-1zM1 5h4v1h-4zM10 5h1v1h-1zM5 6h5v1h-5z"/>
+      <path fill="#7f1d1d" d="M2 2h2v1h-2zM1 4h2v1h-2zM8 4h2v1h-2zM5 5h5v1h-5z"/>
+      <path fill="#ef4444" d="M5 2h1v1h-1zM8 2h1v1h-1zM4 3h6v1h-6zM4 4h4v1h-4zM10 4h1v1h-1z"/>
+      <path fill="#fca5a5" d="M6 2h2v1h-2z"/>
+      <path fill="#fef08a" d="M1 3h2v1h-2z"/>
+    </g>
+    <g id="bug-frame-b" shape-rendering="crispEdges">
+      <path fill="#475569" d="M2 0h1v1h-1zM5 0h1v1h-1zM2 1h2v1h-2zM2 6h1v1h-1zM2 7h1v1h-1zM5 7h1v1h-1zM8 7h1v1h-1zM11 7h1v1h-1zM3 8h1v1h-1zM6 8h1v1h-1zM9 8h1v1h-1z"/>
+      <path fill="#0f172a" d="M5 1h4v1h-4zM1 2h1v1h-1zM4 2h1v1h-1zM9 2h1v1h-1zM0 3h1v1h-1zM3 3h1v1h-1zM10 3h1v1h-1zM0 4h1v1h-1zM3 4h1v1h-1zM11 4h1v1h-1zM1 5h4v1h-4zM10 5h1v1h-1zM5 6h5v1h-5z"/>
+      <path fill="#7f1d1d" d="M2 2h2v1h-2zM1 4h2v1h-2zM8 4h2v1h-2zM5 5h5v1h-5z"/>
+      <path fill="#ef4444" d="M5 2h1v1h-1zM8 2h1v1h-1zM4 3h6v1h-6zM4 4h4v1h-4zM10 4h1v1h-1z"/>
+      <path fill="#fca5a5" d="M6 2h2v1h-2z"/>
+      <path fill="#fef08a" d="M1 3h2v1h-2z"/>
+    </g>
+    <g id="walking-bug">
+      <use href="#bug-frame-a" class="leg-a"/>
+      <use href="#bug-frame-b" class="leg-b"/>
+    </g>
+  </defs>
+
+  <style>
+    .pose-guard { animation: guardVis 1.4s steps(1, end) infinite; }
+    .pose-windup { animation: windupVis 1.4s steps(1, end) infinite; }
+    .pose-slash { animation: slashVis 1.4s steps(1, end) infinite; }
+    .slash-fx { animation: slashFx 1.4s ease-out infinite; }
+    .sparks-fx { animation: sparksFx 1.4s ease-out infinite; }
+    .leg-a { animation: legToggleA 0.28s steps(1, end) infinite; }
+    .leg-b { animation: legToggleB 0.28s steps(1, end) infinite; }
+    .bug-front { animation: bugFrontMove 1.4s linear infinite; }
+    .bug-mid   { animation: bugMidMove   1.4s linear infinite; }
+    .bug-back  { animation: bugBackMove  1.4s linear infinite; }
+    .half-top { animation: sliceTop 1.4s ease-out infinite; }
+    .half-bot { animation: sliceBot 1.4s ease-out infinite; }
+    .portal-glow { animation: portalPulse 1.4s ease-in-out infinite; }
+
+    @keyframes guardVis {
+      0%, 100% { opacity: 1; }
+      33% { opacity: 0; }
+      72% { opacity: 1; }
+    }
+    @keyframes windupVis {
+      0%, 100% { opacity: 0; }
+      33% { opacity: 1; }
+      45% { opacity: 0; }
+    }
+    @keyframes slashVis {
+      0%, 100% { opacity: 0; }
+      45% { opacity: 1; }
+      72% { opacity: 0; }
+    }
+    @keyframes slashFx {
+      0%, 44.9% { opacity: 0; transform: translate(-2px, 0); }
+      45% { opacity: 1; transform: translate(0, 0); }
+      64% { opacity: 0; transform: translate(4px, 0); }
+      100% { opacity: 0; }
+    }
+    @keyframes sparksFx {
+      0%, 44.9% { opacity: 0; transform: translate(0, 0); }
+      45% { opacity: 1; transform: translate(0, 0); }
+      70% { opacity: 0; transform: translate(5px, -2px); }
+      100% { opacity: 0; }
+    }
+    @keyframes legToggleA {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+    @keyframes legToggleB {
+      0%, 100% { opacity: 0; }
+      50% { opacity: 1; }
+    }
+    @keyframes bugFrontMove {
+      0%    { transform: translate(54px, 22px); opacity: 1; }
+      44.9% { transform: translate(35.1px, 22px); opacity: 1; }
+      45%, 100% { transform: translate(35.1px, 22px); opacity: 0; }
+    }
+    @keyframes bugMidMove {
+      0%   { transform: translate(96px, 22px); }
+      100% { transform: translate(54px, 22px); }
+    }
+    @keyframes bugBackMove {
+      0%   { transform: translate(138px, 22px); }
+      100% { transform: translate(96px, 22px); }
+    }
+    @keyframes sliceTop {
+      0%, 44.9% { opacity: 0; transform: translate(35px, 22px); }
+      45% { opacity: 1; transform: translate(35px, 21px); }
+      80% { opacity: 0; transform: translate(45px, 13px); }
+      100% { opacity: 0; transform: translate(45px, 13px); }
+    }
+    @keyframes sliceBot {
+      0%, 44.9% { opacity: 0; transform: translate(35px, 26px); }
+      45% { opacity: 1; transform: translate(35px, 26px); }
+      80% { opacity: 0; transform: translate(47px, 29px); }
+      100% { opacity: 0; transform: translate(47px, 29px); }
+    }
+    @keyframes portalPulse {
+      0%, 100% { opacity: 0.55; }
+      50% { opacity: 0.95; }
+    }
+  </style>
+
+  <rect x="0.5" y="0.5" width="111" height="39" rx="4" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+  <rect x="6" y="4" width="100" height="31" rx="2" fill="#161b22" stroke="#21262d" stroke-width="0.75"/>
+
+  <g clip-path="url(#arena-clip)">
+    <g shape-rendering="crispEdges" opacity="0.35">
+      <path fill="#1e293b" d="M22 6h4v25h-4zM52 6h4v25h-4zM82 6h4v25h-4z"/>
+    </g>
+
+    <g shape-rendering="crispEdges" class="portal-glow">
+      <rect x="100" y="15" width="5" height="16" fill="#4c1d95"/>
+      <rect x="102" y="17" width="3" height="12" fill="#7c3aed"/>
+      <rect x="103" y="19" width="2" height="8" fill="#c084fc"/>
+    </g>
+
+    <g shape-rendering="crispEdges">
+      <path fill="#334155" d="M6 31h7v1h-7zM14 31h7v1h-7zM22 31h7v1h-7zM30 31h7v1h-7zM38 31h7v1h-7zM46 31h7v1h-7zM54 31h7v1h-7zM62 31h7v1h-7zM70 31h7v1h-7zM78 31h7v1h-7zM86 31h7v1h-7zM94 31h7v1h-7zM102 31h7v1h-7z"/>
+      <path fill="#1e293b" d="M6 32h7v2h-7zM14 32h7v2h-7zM22 32h7v2h-7zM30 32h7v2h-7zM38 32h7v2h-7zM46 32h7v2h-7zM54 32h7v2h-7zM62 32h7v2h-7zM70 32h7v2h-7zM78 32h7v2h-7zM86 32h7v2h-7zM94 32h7v2h-7zM102 32h7v2h-7z"/>
+      <path fill="#0f172a" d="M13 31h1v3h-1zM21 31h1v3h-1zM29 31h1v3h-1zM37 31h1v3h-1zM45 31h1v3h-1zM53 31h1v3h-1zM61 31h1v3h-1zM69 31h1v3h-1zM77 31h1v3h-1zM85 31h1v3h-1zM93 31h1v3h-1zM101 31h1v3h-1zM109 31h1v3h-1z"/>
+    </g>
+
+    <use href="#walking-bug" class="bug-back"/>
+    <use href="#walking-bug" class="bug-mid"/>
+    <use href="#walking-bug" class="bug-front"/>
+
+    <g class="half-top" shape-rendering="crispEdges">
+      <path fill="#475569" d="M1 0h1v1h-1zM4 0h1v1h-1zM2 1h2v1h-2z"/>
+      <path fill="#0f172a" d="M5 1h4v1h-4zM1 2h1v1h-1zM4 2h1v1h-1zM9 2h1v1h-1zM0 3h1v1h-1zM3 3h1v1h-1z"/>
+      <path fill="#7f1d1d" d="M2 2h2v1h-2z"/>
+      <path fill="#ef4444" d="M5 2h1v1h-1zM8 2h1v1h-1zM4 3h4v1h-4z"/>
+      <path fill="#fca5a5" d="M6 2h2v1h-2z"/>
+      <path fill="#fef08a" d="M1 3h2v1h-2z"/>
+      <path fill="#38bdf8" d="M8 3h1v1h-1zM1 4h1v1h-1z"/>
+      <path fill="#7dd3fc" d="M9 3h1v1h-1zM2 4h1v1h-1z"/>
+      <path fill="#ffffff" d="M10 3h2v1h-2zM3 4h5v1h-5z"/>
+    </g>
+    <g class="half-bot" shape-rendering="crispEdges">
+      <path fill="#ffffff" d="M4 0h2v1h-2zM5 1h2v1h-2z"/>
+      <path fill="#7dd3fc" d="M6 0h2v1h-2zM4 1h1v1h-1z"/>
+      <path fill="#38bdf8" d="M8 0h2v1h-2zM3 1h1v1h-1z"/>
+      <path fill="#0f172a" d="M1 1h2v1h-2zM10 1h1v1h-1zM5 2h5v1h-5z"/>
+      <path fill="#7f1d1d" d="M7 1h3v1h-3z"/>
+      <path fill="#475569" d="M2 2h1v1h-1zM1 3h1v1h-1zM4 3h1v1h-1zM7 3h1v1h-1zM10 3h1v1h-1zM0 4h1v1h-1zM3 4h1v1h-1zM6 4h1v1h-1zM9 4h1v1h-1z"/>
+    </g>
+
+    <g class="pose-guard" shape-rendering="crispEdges">
+      <path fill="#3b82f6" d="M16 12h2v1h-2zM15 13h2v1h-2zM18 13h1v1h-1zM15 14h1v1h-1zM14 15h1v1h-1z"/>
+      <path fill="#1d4ed8" d="M17 13h1v1h-1zM14 14h1v1h-1zM13 15h1v1h-1zM14 19h2v1h-2zM13 20h3v1h-3zM12 21h4v1h-4zM12 22h3v1h-3zM11 23h4v1h-4zM11 24h3v1h-3zM12 25h2v1h-2z"/>
+      <path fill="#0f172a" d="M18 14h1v1h-1zM22 14h1v1h-1zM17 15h1v1h-1zM23 15h1v1h-1zM16 16h1v1h-1zM24 16h1v1h-1zM16 17h1v1h-1zM24 17h1v1h-1zM17 18h1v1h-1zM23 18h1v1h-1zM16 19h1v1h-1zM24 19h1v1h-1zM16 20h1v1h-1zM24 20h1v1h-1zM16 21h1v1h-1zM24 21h2v1h-2zM27 21h1v1h-1zM16 22h1v1h-1zM24 22h1v1h-1zM16 23h1v1h-1zM24 23h1v1h-1zM16 24h1v1h-1zM24 24h1v1h-1zM16 25h1v1h-1zM24 25h1v1h-1zM17 26h1v1h-1zM23 26h1v1h-1zM16 27h1v1h-1zM19 27h2v1h-2zM24 27h1v1h-1zM16 28h1v1h-1zM19 28h1v1h-1zM21 28h1v1h-1zM24 28h1v1h-1zM15 29h1v1h-1zM19 29h1v1h-1zM21 29h1v1h-1zM25 29h1v1h-1zM15 30h5v1h-5zM21 30h5v1h-5z"/>
+      <path fill="#e2e8f0" d="M19 14h1v1h-1zM21 14h1v1h-1zM18 15h5v1h-5zM17 16h1v1h-1zM23 16h1v1h-1zM17 17h1v1h-1zM23 17h1v1h-1zM17 19h7v1h-7zM17 20h1v1h-1zM19 20h4v1h-4zM17 21h1v1h-1zM22 21h1v1h-1zM17 22h1v1h-1zM23 22h1v1h-1zM18 28h1v1h-1zM23 28h1v1h-1zM18 29h1v1h-1zM24 29h1v1h-1z"/>
+      <path fill="#94a3b8" d="M20 14h1v1h-1zM18 16h1v1h-1zM22 16h1v1h-1zM18 17h5v1h-5zM18 20h1v1h-1zM23 20h1v1h-1zM18 21h1v1h-1zM23 21h1v1h-1zM17 27h2v1h-2zM22 27h2v1h-2zM17 28h1v1h-1zM22 28h1v1h-1z"/>
+      <path fill="#7dd3fc" d="M28 15h1v1h-1zM27 16h1v1h-1zM26 17h1v1h-1zM25 18h1v1h-1z"/>
+      <path fill="#ffffff" d="M29 15h1v1h-1zM28 16h1v1h-1zM27 17h1v1h-1zM26 18h1v1h-1zM25 19h1v1h-1zM20 24h1v1h-1z"/>
+      <path fill="#38bdf8" d="M19 16h3v1h-3zM29 16h1v1h-1zM28 17h1v1h-1zM27 18h1v1h-1zM26 19h1v1h-1zM19 23h3v1h-3zM19 24h1v1h-1zM21 24h1v1h-1zM19 25h3v1h-3z"/>
+      <path fill="#64748b" d="M18 18h5v1h-5zM19 21h3v1h-3zM21 27h1v1h-1zM16 29h2v1h-2zM22 29h2v1h-2z"/>
+      <path fill="#f59e0b" d="M25 20h1v1h-1zM27 20h1v1h-1zM18 22h5v1h-5zM17 23h1v1h-1zM23 23h1v1h-1zM17 24h1v1h-1zM22 24h1v1h-1zM17 25h1v1h-1zM23 25h1v1h-1zM18 26h5v1h-5z"/>
+      <path fill="#fbbf24" d="M26 20h1v1h-1zM26 21h1v1h-1zM18 23h1v1h-1zM22 23h1v1h-1zM18 24h1v1h-1zM23 24h1v1h-1zM18 25h1v1h-1zM22 25h1v1h-1z"/>
+    </g>
+    <g class="pose-windup" shape-rendering="crispEdges">
+      <path fill="#ffffff" d="M13 13h1v1h-1zM15 13h1v1h-1zM14 14h1v1h-1zM16 14h1v1h-1zM15 15h1v1h-1zM17 15h1v1h-1zM21 17h2v1h-2zM20 24h1v1h-1z"/>
+      <path fill="#7dd3fc" d="M14 13h1v1h-1zM15 14h1v1h-1zM16 15h1v1h-1z"/>
+      <path fill="#38bdf8" d="M16 13h1v1h-1zM17 14h1v1h-1zM18 15h1v1h-1zM19 17h2v1h-2zM19 23h3v1h-3zM19 24h1v1h-1zM21 24h1v1h-1zM19 25h3v1h-3z"/>
+      <path fill="#3b82f6" d="M18 14h2v1h-2zM19 15h1v1h-1zM21 15h1v1h-1zM15 18h1v1h-1z"/>
+      <path fill="#1d4ed8" d="M20 15h1v1h-1zM14 18h1v1h-1zM13 19h2v1h-2zM12 20h3v1h-3zM11 21h4v1h-4zM11 22h3v1h-3zM10 23h4v1h-4zM10 24h3v1h-3zM10 25h2v1h-2z"/>
+      <path fill="#f59e0b" d="M16 16h1v1h-1zM18 16h1v1h-1zM18 22h5v1h-5zM17 23h1v1h-1zM23 23h1v1h-1zM17 24h1v1h-1zM22 24h1v1h-1zM17 25h1v1h-1zM23 25h1v1h-1zM18 26h5v1h-5z"/>
+      <path fill="#fbbf24" d="M17 16h1v1h-1zM17 17h1v1h-1zM18 23h1v1h-1zM22 23h1v1h-1zM18 24h1v1h-1zM23 24h1v1h-1zM18 25h1v1h-1zM22 25h1v1h-1z"/>
+      <path fill="#e2e8f0" d="M19 16h3v1h-3zM23 17h1v1h-1zM17 18h1v1h-1zM23 18h1v1h-1zM17 20h7v1h-7zM17 21h1v1h-1zM19 21h4v1h-4zM17 22h1v1h-1zM23 22h1v1h-1zM17 28h1v1h-1zM23 28h1v1h-1zM17 29h1v1h-1zM24 29h1v1h-1z"/>
+      <path fill="#0f172a" d="M22 16h1v1h-1zM15 17h2v1h-2zM24 17h1v1h-1zM16 18h1v1h-1zM24 18h1v1h-1zM17 19h1v1h-1zM23 19h1v1h-1zM16 20h1v1h-1zM24 20h1v1h-1zM16 21h1v1h-1zM24 21h2v1h-2zM16 22h1v1h-1zM24 22h1v1h-1zM16 23h1v1h-1zM24 23h1v1h-1zM16 24h1v1h-1zM24 24h1v1h-1zM16 25h1v1h-1zM24 25h1v1h-1zM17 26h1v1h-1zM23 26h1v1h-1zM16 27h1v1h-1zM19 27h2v1h-2zM24 27h1v1h-1zM15 28h1v1h-1zM18 28h1v1h-1zM21 28h1v1h-1zM24 28h1v1h-1zM14 29h1v1h-1zM18 29h1v1h-1zM21 29h1v1h-1zM25 29h1v1h-1zM14 30h5v1h-5zM21 30h5v1h-5z"/>
+      <path fill="#94a3b8" d="M18 17h1v1h-1zM18 18h5v1h-5zM18 21h1v1h-1zM23 21h1v1h-1zM17 27h2v1h-2zM22 27h2v1h-2zM16 28h1v1h-1zM22 28h1v1h-1z"/>
+      <path fill="#64748b" d="M18 19h5v1h-5zM21 27h1v1h-1zM15 29h2v1h-2zM22 29h2v1h-2z"/>
+    </g>
+    <g class="pose-slash" shape-rendering="crispEdges">
+      <path fill="#3b82f6" d="M19 14h2v1h-2zM18 15h2v1h-2zM21 15h1v1h-1zM18 16h1v1h-1z"/>
+      <path fill="#1d4ed8" d="M20 15h1v1h-1zM16 16h2v1h-2zM14 17h4v1h-4zM13 18h4v1h-4zM12 19h4v1h-4zM13 20h2v1h-2z"/>
+      <path fill="#0f172a" d="M20 16h1v1h-1zM24 16h1v1h-1zM19 17h1v1h-1zM25 17h1v1h-1zM19 18h1v1h-1zM27 18h1v1h-1zM19 19h1v1h-1zM27 19h1v1h-1zM20 20h1v1h-1zM26 20h1v1h-1zM19 21h1v1h-1zM27 21h2v1h-2zM18 22h1v1h-1zM29 22h1v1h-1zM18 23h1v1h-1zM28 23h1v1h-1zM18 24h1v1h-1zM28 24h2v1h-2zM19 25h1v1h-1zM27 25h1v1h-1zM19 26h1v1h-1zM22 26h2v1h-2zM27 26h1v1h-1zM18 27h1v1h-1zM21 27h1v1h-1zM25 27h1v1h-1zM28 27h1v1h-1zM17 28h1v1h-1zM20 28h1v1h-1zM26 28h1v1h-1zM29 28h1v1h-1zM16 29h1v1h-1zM20 29h1v1h-1zM26 29h1v1h-1zM30 29h1v1h-1zM16 30h5v1h-5zM26 30h5v1h-5z"/>
+      <path fill="#e2e8f0" d="M21 16h1v1h-1zM23 16h1v1h-1zM20 17h5v1h-5zM20 18h1v1h-1zM26 18h1v1h-1zM20 19h1v1h-1zM26 19h1v1h-1zM20 21h7v1h-7zM22 22h2v1h-2zM26 22h3v1h-3zM23 23h1v1h-1zM26 23h2v1h-2zM22 24h2v1h-2zM26 24h2v1h-2zM20 27h1v1h-1zM27 27h1v1h-1zM19 28h1v1h-1zM28 28h1v1h-1zM19 29h1v1h-1zM29 29h1v1h-1z"/>
+      <path fill="#94a3b8" d="M22 16h1v1h-1zM21 18h1v1h-1zM21 19h5v1h-5zM24 22h2v1h-2zM24 23h1v1h-1zM24 24h2v1h-2zM20 26h2v1h-2zM25 26h2v1h-2zM19 27h1v1h-1zM26 27h1v1h-1zM18 28h1v1h-1zM27 28h1v1h-1z"/>
+      <path fill="#38bdf8" d="M22 18h2v1h-2zM21 23h1v1h-1zM32 23h1v1h-1zM31 24h1v1h-1zM31 25h1v1h-1z"/>
+      <path fill="#ffffff" d="M24 18h2v1h-2zM22 23h1v1h-1zM34 23h1v1h-1zM33 24h2v1h-2zM34 25h1v1h-1z"/>
+      <path fill="#64748b" d="M21 20h5v1h-5zM25 23h1v1h-1zM20 25h7v1h-7zM24 26h1v1h-1zM17 29h2v1h-2zM27 29h2v1h-2z"/>
+      <path fill="#f59e0b" d="M19 22h1v1h-1zM21 22h1v1h-1zM19 23h1v1h-1zM29 23h1v1h-1zM31 23h1v1h-1zM19 24h1v1h-1zM21 24h1v1h-1z"/>
+      <path fill="#fbbf24" d="M20 22h1v1h-1zM20 23h1v1h-1zM30 23h1v1h-1zM20 24h1v1h-1zM30 24h1v1h-1z"/>
+      <path fill="#7dd3fc" d="M33 23h1v1h-1zM32 24h1v1h-1zM32 25h2v1h-2z"/>
+    </g>
+
+    <g class="slash-fx" shape-rendering="crispEdges">
+      <path fill="#38bdf8" d="M34 16h1v1h-1zM35 17h2v1h-2zM36 18h2v1h-2zM37 19h2v1h-2zM37 20h2v1h-2zM36 21h2v1h-2zM35 22h2v1h-2zM34 23h1v1h-1zM32 24h2v1h-2zM30 25h3v1h-3z"/>
+      <path fill="#7dd3fc" d="M35 16h3v1h-3zM37 17h2v1h-2zM38 18h2v1h-2zM39 19h2v1h-2zM39 20h2v1h-2zM38 21h2v1h-2zM37 22h2v1h-2zM35 23h3v1h-3zM34 24h3v1h-3zM33 25h2v1h-2z"/>
+      <path fill="#ffffff" d="M38 16h2v1h-2zM39 17h3v1h-3zM40 18h3v1h-3zM41 19h2v1h-2zM41 20h2v1h-2zM40 21h3v1h-3zM39 22h3v1h-3zM38 23h2v1h-2zM37 24h1v1h-1zM35 25h1v1h-1z"/>
+    </g>
+    <g class="sparks-fx" shape-rendering="crispEdges">
+      <path fill="#ffffff" d="M36 19h1v1h-1zM40 21h1v1h-1zM38 22h1v1h-1zM44 24h1v1h-1z"/>
+      <path fill="#fbbf24" d="M42 19h1v1h-1zM34 21h1v1h-1zM42 23h1v1h-1z"/>
+      <path fill="#38bdf8" d="M38 20h1v1h-1zM44 21h1v1h-1zM35 23h1v1h-1zM39 24h1v1h-1z"/>
+    </g>
+  </g>
+</svg>
