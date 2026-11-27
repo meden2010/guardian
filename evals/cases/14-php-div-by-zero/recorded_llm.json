@@ -1,0 +1,15 @@
+{
+  "findings": [
+    {
+      "path": "app/Services/CargoService.php",
+      "line": 8,
+      "code_snippet": "return round($totalKg / $containerCount, 2);",
+      "category": "edge_case",
+      "severity": "high",
+      "introduced_by_change": true,
+      "scenario": "$totalKg = 500.0, $containerCount = 0",
+      "message": "No se valida `$containerCount === 0`, lo que lanza `DivisionByZeroError` en PHP.",
+      "suggestion": "if ($containerCount <= 0) { throw new \\InvalidArgumentException('containerCount must be > 0'); }"
+    }
+  ]
+}

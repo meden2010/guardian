@@ -1,0 +1,8 @@
+{
+  "id": "15-php-ast-prior-guard-clean",
+  "kind": "clean",
+  "language": "php",
+  "pr_title": "refactor: round average container weight to 3 decimals",
+  "pr_description": "Increase rounding precision.",
+  "expected_findings": []
+}

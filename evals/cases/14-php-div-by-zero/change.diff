@@ -1,0 +1,14 @@
+diff --git a/app/Services/CargoService.php b/app/Services/CargoService.php
+--- /dev/null
++++ b/app/Services/CargoService.php
+@@ -0,0 +1,11 @@
++<?php
++namespace App\Services;
++
++use App\Models\Shipment;
++
++class CargoService {
++    public function averageWeight(float $totalKg, int $containerCount): float {
++        return round($totalKg / $containerCount, 2);
++    }
++}

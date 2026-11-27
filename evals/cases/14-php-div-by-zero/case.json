@@ -1,0 +1,15 @@
+{
+  "id": "14-php-div-by-zero",
+  "kind": "bug",
+  "language": "php",
+  "pr_title": "feat: calculate average container weight",
+  "pr_description": "Add container average weight helper.",
+  "expected_findings": [
+    {
+      "path": "app/Services/CargoService.php",
+      "line_start": 7,
+      "line_end": 10,
+      "description": "Division by zero when $containerCount is 0"
+    }
+  ]
+}

@@ -1,9 +1,10 @@
 //! Pure core library for Guardian.
 //!
-//! Contains diff parsing, secret redaction, prompt construction, deterministic
-//! 7-stage noise filtering, SHA-256 fingerprinting, and finding validation with
-//! zero network or filesystem I/O.
+//! Contains diff parsing, secret redaction, Tree-sitter AST intra-file context,
+//! prompt construction, deterministic 7-stage noise filtering, SHA-256
+//! fingerprinting, and finding validation with zero network or filesystem I/O.
 
+pub mod ast_context;
 pub mod diff;
 pub mod filter;
 pub mod fingerprint;
@@ -11,9 +12,10 @@ pub mod prompt;
 pub mod redact;
 pub mod types;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use diff::{parse_unified_diff, ParsedDiff};
+use ast_context::{extract_file_context, render_contexts_for_prompt};
+use diff::{parse_unified_diff, DiffLineKind, ParsedDiff};
 use filter::{filter_findings, format_pr_summary, FilteredReview};
 use prompt::{build_review_prompt, BuiltPrompt};
 use redact::redact_secrets;
@@ -37,14 +39,27 @@ pub enum PreparedDiff {
     Ready {
         parsed_diff: ParsedDiff,
         prompt: BuiltPrompt,
+        ast_context_files: usize,
     },
 }
 
-/// Redacts secrets from the raw diff & PR metadata, parses reviewable hunks, and builds prompts.
+/// Redacts secrets from the raw diff & PR metadata, parses reviewable hunks, and builds prompts
+/// without extra file context.
 pub fn prepare_review(
     raw_diff: &str,
     metadata: &PrMetadata,
     config: &ReviewConfig,
+) -> PreparedDiff {
+    prepare_review_with_context(raw_diff, metadata, config, &HashMap::new())
+}
+
+/// Redacts secrets from the raw diff, metadata, and optional full file sources, extracts
+/// Tree-sitter AST intra-file context (imports + enclosing functions), and builds prompts.
+pub fn prepare_review_with_context(
+    raw_diff: &str,
+    metadata: &PrMetadata,
+    config: &ReviewConfig,
+    file_sources: &HashMap<String, String>,
 ) -> PreparedDiff {
     let redacted_diff = redact_secrets(raw_diff);
     let redacted_meta = PrMetadata {
@@ -63,11 +78,44 @@ pub fn prepare_review(
         };
     }
 
+    let mut extracted_contexts = Vec::new();
+    for file in &parsed_diff.files {
+        if let Some(raw_src) = file_sources.get(&file.path) {
+            let redacted_src = redact_secrets(raw_src);
+            let mut changed_lines: Vec<u32> = file
+                .hunks
+                .iter()
+                .flat_map(|h| h.lines.iter())
+                .filter(|dl| dl.kind == DiffLineKind::Added)
+                .filter_map(|dl| dl.new_lineno)
+                .collect();
+            if changed_lines.is_empty() {
+                changed_lines = file
+                    .hunks
+                    .iter()
+                    .flat_map(|h| h.lines.iter())
+                    .filter_map(|dl| dl.new_lineno)
+                    .collect();
+            }
+            if let Some(ctx) = extract_file_context(&file.path, &redacted_src, &changed_lines) {
+                extracted_contexts.push(ctx);
+            }
+        }
+    }
+
+    let ast_context_files = extracted_contexts.len();
+    let rendered_ctx = if extracted_contexts.is_empty() {
+        None
+    } else {
+        Some(render_contexts_for_prompt(&extracted_contexts))
+    };
+
     let annotated = parsed_diff.render_for_prompt();
-    let prompt = build_review_prompt(&redacted_meta, &annotated, config);
+    let prompt = build_review_prompt(&redacted_meta, &annotated, rendered_ctx.as_deref(), config);
     PreparedDiff::Ready {
         parsed_diff,
         prompt,
+        ast_context_files,
     }
 }
 

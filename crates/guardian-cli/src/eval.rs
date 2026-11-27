@@ -1,6 +1,6 @@
 //! Evaluation harness (`guardian eval`) for Level A (offline replay) and Level B (live LLM) benchmarks.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -9,7 +9,7 @@ use anyhow::{bail, Context, Result};
 use clap::Args;
 use guardian_core::prompt::PROMPT_VERSION;
 use guardian_core::types::{LlmReviewOutput, PrMetadata, ReviewConfig, Severity, ValidatedFinding};
-use guardian_core::{finalize_review, prepare_review, PreparedDiff};
+use guardian_core::{finalize_review, prepare_review_with_context, PreparedDiff};
 use serde::{Deserialize, Serialize};
 
 use crate::llm::{OpenAiCompatibleClient, OpenAiCompatibleConfig};
@@ -196,12 +196,14 @@ pub async fn run_eval(args: EvalArgs) -> Result<EvalReport> {
                 description: spec.pr_description.clone(),
             };
 
-            let prepared = prepare_review(&raw_diff, &meta, &config);
+            let file_sources = load_case_files(&dir.join("files"));
+            let prepared = prepare_review_with_context(&raw_diff, &meta, &config, &file_sources);
             let published: Vec<ValidatedFinding> = match prepared {
                 PreparedDiff::Skip { .. } => Vec::new(),
                 PreparedDiff::Ready {
                     parsed_diff,
                     prompt,
+                    ..
                 } => {
                     let llm_output = if let Some(client) = &llm_client {
                         let stats = client.review(&prompt.system, &prompt.user).await?;
@@ -341,6 +343,32 @@ fn discover_case_dirs(root: &Path) -> Result<Vec<PathBuf>> {
         .collect();
     dirs.sort();
     Ok(dirs)
+}
+
+fn load_case_files(files_root: &Path) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    if !files_root.is_dir() {
+        return out;
+    }
+    collect_files_recursive(files_root, files_root, &mut out);
+    out
+}
+
+fn collect_files_recursive(base: &Path, dir: &Path, out: &mut HashMap<String, String>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files_recursive(base, &path, out);
+        } else if path.is_file() {
+            if let (Ok(rel), Ok(content)) = (path.strip_prefix(base), fs::read_to_string(&path)) {
+                let norm = rel.to_string_lossy().replace('\\', "/");
+                out.insert(norm, content);
+            }
+        }
+    }
 }
 
 fn score_case(spec: &EvalCaseSpec, published: &[ValidatedFinding]) -> (usize, usize, bool) {
