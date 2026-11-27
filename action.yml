@@ -1,0 +1,132 @@
+name: "Guardian PR Reviewer"
+description: "Low-noise, zero-infra, BYOK PR code reviewer in Rust focused strictly on logical bugs and runtime edge cases."
+author: "meden2010"
+
+branding:
+  icon: "shield"
+  color: "blue"
+
+inputs:
+  model:
+    description: "LLM model identifier (required, e.g. gpt-4o-mini or qwen2.5-coder:7b)"
+    required: true
+  base_url:
+    description: "OpenAI-compatible API base URL"
+    required: false
+    default: "https://api.openai.com/v1"
+  api_key:
+    description: "LLM API key (optional for unauthenticated local Ollama/vLLM servers)"
+    required: false
+    default: ""
+  github_token:
+    description: "GitHub token (GITHUB_TOKEN or GitHub App installation token)"
+    required: false
+    default: "${{ github.token }}"
+  language:
+    description: "Override review comment language (e.g. en, es). Defaults to .guardian.yml."
+    required: false
+    default: ""
+  min_severity:
+    description: "Override minimum severity (low, medium, high, critical). Defaults to .guardian.yml."
+    required: false
+    default: ""
+  max_comments:
+    description: "Override maximum comments per PR. Defaults to .guardian.yml."
+    required: false
+    default: ""
+  max_files:
+    description: "Override maximum files analyzed. Defaults to .guardian.yml."
+    required: false
+    default: ""
+  allow_insecure_http:
+    description: "Allow plain http:// for trusted LAN/Tailscale inference servers"
+    required: false
+    default: "false"
+  timeout_secs:
+    description: "HTTP timeout in seconds for LLM calls"
+    required: false
+    default: "240"
+  no_suggestions:
+    description: "Disable native GitHub ```suggestion blocks"
+    required: false
+    default: "false"
+  fail_on_error:
+    description: "Exit non-zero on operational errors (default false = fail-open)"
+    required: false
+    default: "false"
+  dry_run:
+    description: "Run full pipeline without publishing comments to GitHub"
+    required: false
+    default: "false"
+  version:
+    description: "Guardian release tag to download and verify"
+    required: false
+    default: "v1.0.0"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Download, verify SHA-256, and run Guardian (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      env:
+        GUARDIAN_VERSION: ${{ inputs.version }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        GUARDIAN_LLM_API_KEY: ${{ inputs.api_key }}
+        GUARDIAN_LLM_BASE_URL: ${{ inputs.base_url }}
+        GUARDIAN_LLM_MODEL: ${{ inputs.model }}
+        GUARDIAN_TIMEOUT_SECS: ${{ inputs.timeout_secs }}
+        INPUT_LANGUAGE: ${{ inputs.language }}
+        INPUT_MIN_SEVERITY: ${{ inputs.min_severity }}
+        INPUT_MAX_COMMENTS: ${{ inputs.max_comments }}
+        INPUT_MAX_FILES: ${{ inputs.max_files }}
+        INPUT_ALLOW_INSECURE_HTTP: ${{ inputs.allow_insecure_http }}
+        INPUT_NO_SUGGESTIONS: ${{ inputs.no_suggestions }}
+        INPUT_FAIL_ON_ERROR: ${{ inputs.fail_on_error }}
+        INPUT_DRY_RUN: ${{ inputs.dry_run }}
+      run: |
+        set -euo pipefail
+        ASSET="guardian-x86_64-unknown-linux-gnu"
+        BASE="https://github.com/meden2010/guardian/releases/download/${GUARDIAN_VERSION}"
+        WORK_DIR="${RUNNER_TEMP}/guardian-${GUARDIAN_VERSION}"
+        mkdir -p "${WORK_DIR}"
+        cd "${WORK_DIR}"
+
+        curl -fsSL "${BASE}/${ASSET}" -o "${ASSET}"
+        curl -fsSL "${BASE}/checksums.txt" -o checksums.txt
+
+        grep " ${ASSET}\$" checksums.txt | sha256sum -c -
+        chmod +x "${ASSET}"
+
+        ARGS=(review)
+        [ -n "${INPUT_LANGUAGE}" ] && ARGS+=(--language "${INPUT_LANGUAGE}")
+        [ -n "${INPUT_MIN_SEVERITY}" ] && ARGS+=(--min-severity "${INPUT_MIN_SEVERITY}")
+        [ -n "${INPUT_MAX_COMMENTS}" ] && ARGS+=(--max-comments "${INPUT_MAX_COMMENTS}")
+        [ -n "${INPUT_MAX_FILES}" ] && ARGS+=(--max-files "${INPUT_MAX_FILES}")
+        [ "${INPUT_ALLOW_INSECURE_HTTP}" = "true" ] && ARGS+=(--allow-insecure-http)
+        [ "${INPUT_NO_SUGGESTIONS}" = "true" ] && ARGS+=(--no-suggestions)
+        [ "${INPUT_FAIL_ON_ERROR}" = "true" ] && ARGS+=(--fail-on-error)
+        [ "${INPUT_DRY_RUN}" = "true" ] && ARGS+=(--dry-run)
+
+        "./${ASSET}" "${ARGS[@]}"
+
+    - name: Download, verify SHA-256, and run Guardian (Windows)
+      if: runner.os == 'Windows'
+      shell: cmd
+      env:
+        GUARDIAN_VERSION: ${{ inputs.version }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        GUARDIAN_LLM_API_KEY: ${{ inputs.api_key }}
+        GUARDIAN_LLM_BASE_URL: ${{ inputs.base_url }}
+        GUARDIAN_LLM_MODEL: ${{ inputs.model }}
+        GUARDIAN_TIMEOUT_SECS: ${{ inputs.timeout_secs }}
+        INPUT_LANGUAGE: ${{ inputs.language }}
+        INPUT_MIN_SEVERITY: ${{ inputs.min_severity }}
+        INPUT_MAX_COMMENTS: ${{ inputs.max_comments }}
+        INPUT_MAX_FILES: ${{ inputs.max_files }}
+        INPUT_ALLOW_INSECURE_HTTP: ${{ inputs.allow_insecure_http }}
+        INPUT_NO_SUGGESTIONS: ${{ inputs.no_suggestions }}
+        INPUT_FAIL_ON_ERROR: ${{ inputs.fail_on_error }}
+        INPUT_DRY_RUN: ${{ inputs.dry_run }}
+      run: |
+        powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Stop'; $ver = $env:GUARDIAN_VERSION; $asset = 'guardian-x86_64-pc-windows-msvc.exe'; $base = 'https://github.com/meden2010/guardian/releases/download/' + $ver; $dir = Join-Path $env:RUNNER_TEMP ('guardian-' + $ver); New-Item -ItemType Directory -Force -Path $dir | Out-Null; $bin = Join-Path $dir $asset; $sumFile = Join-Path $dir 'checksums.txt'; Invoke-WebRequest -Uri ($base + '/' + $asset) -OutFile $bin; Invoke-WebRequest -Uri ($base + '/checksums.txt') -OutFile $sumFile; $line = (Get-Content $sumFile | Where-Object { $_ -match (' ' + [regex]::Escape($asset) + '$') } | Select-Object -First 1); if (-not $line) { throw 'Checksum entry missing for ' + $asset }; $expected = ($line -split '\s+')[0].ToLower(); $actual = (Get-FileHash -Path $bin -Algorithm SHA256).Hash.ToLower(); if ($actual -ne $expected) { throw ('SHA-256 mismatch: expected ' + $expected + ' got ' + $actual) }; $args = @('review'); if ($env:INPUT_LANGUAGE) { $args += @('--language', $env:INPUT_LANGUAGE) }; if ($env:INPUT_MIN_SEVERITY) { $args += @('--min-severity', $env:INPUT_MIN_SEVERITY) }; if ($env:INPUT_MAX_COMMENTS) { $args += @('--max-comments', $env:INPUT_MAX_COMMENTS) }; if ($env:INPUT_MAX_FILES) { $args += @('--max-files', $env:INPUT_MAX_FILES) }; if ($env:INPUT_ALLOW_INSECURE_HTTP -eq 'true') { $args += '--allow-insecure-http' }; if ($env:INPUT_NO_SUGGESTIONS -eq 'true') { $args += '--no-suggestions' }; if ($env:INPUT_FAIL_ON_ERROR -eq 'true') { $args += '--fail-on-error' }; if ($env:INPUT_DRY_RUN -eq 'true') { $args += '--dry-run' }; & $bin @args; exit $LASTEXITCODE"
