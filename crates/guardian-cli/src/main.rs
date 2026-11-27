@@ -743,7 +743,7 @@ pub async fn execute_review_with_token(
                     let (conclusion, title) = if total_posted == 0 {
                         ("success", "No new high-confidence findings")
                     } else {
-                        ("neutral", "High-confidence findings reported")
+                        ("failure", "High-confidence findings reported")
                     };
                     gh.complete_check_run(&pr_ref, cid, conclusion, title, &summary_md)
                         .await;
