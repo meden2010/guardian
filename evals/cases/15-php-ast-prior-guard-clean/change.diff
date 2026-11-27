@@ -1,0 +1,9 @@
+diff --git a/app/Services/CargoService.php b/app/Services/CargoService.php
+--- a/app/Services/CargoService.php
++++ b/app/Services/CargoService.php
+@@ -17,4 +17,4 @@
+         $netKg = max(0.0, $totalKg - $tareKg);
+-        return round($netKg / $containerCount, 2);
++        return round($netKg / $containerCount, 3);
+     }
+ }

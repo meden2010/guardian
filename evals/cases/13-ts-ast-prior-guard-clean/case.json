@@ -1,0 +1,8 @@
+{
+  "id": "13-ts-ast-prior-guard-clean",
+  "kind": "clean",
+  "language": "typescript",
+  "pr_title": "refactor: round per-seat billing amount",
+  "pr_description": "Use Math.round on per-seat split.",
+  "expected_findings": []
+}

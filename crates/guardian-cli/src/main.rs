@@ -2,7 +2,7 @@ pub mod eval;
 pub mod github;
 pub mod llm;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -10,8 +10,10 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use github::{GitHubClient, PrRef, PublishOutcome};
+use guardian_core::ast_context::SupportedLanguage;
+use guardian_core::diff::parse_unified_diff;
 use guardian_core::types::{LlmReviewOutput, PrMetadata, ReviewConfig, ReviewStatus, Severity};
-use guardian_core::{finalize_review, prepare_review, PreparedDiff};
+use guardian_core::{finalize_review, prepare_review_with_context, PreparedDiff};
 use llm::{OpenAiCompatibleClient, OpenAiCompatibleConfig, TokenUsage};
 
 #[derive(Debug, Parser)]
@@ -291,10 +293,16 @@ async fn run_review(cmd: Commands) -> Result<()> {
     };
 
     // Resolve input source: `--diff-file` (local) vs `--pr` / GitHub Actions event.
-    let (raw_diff, metadata, existing_fps, gh_ctx) = if let Some(path) = diff_file {
+    let (raw_diff, metadata, existing_fps, file_sources, gh_ctx) = if let Some(path) = diff_file {
         let content = fs::read_to_string(&path)
             .with_context(|| format!("failed reading diff file `{}`", path.display()))?;
-        (content, PrMetadata::default(), HashSet::new(), None)
+        (
+            content,
+            PrMetadata::default(),
+            HashSet::new(),
+            HashMap::new(),
+            None,
+        )
     } else {
         let pr_spec = match pr {
             Some(s) => s,
@@ -317,16 +325,29 @@ async fn run_review(cmd: Commands) -> Result<()> {
         let diff_text = gh.fetch_pr_diff(&pr_ref).await?;
         let existing_fps = gh.fetch_existing_fingerprints(&pr_ref).await?;
         let head_sha = pr_info.head.sha.clone();
+
+        // Passively fetch full sources for AST-supported files via GitHub API (no checkout).
+        let preview_parsed = parse_unified_diff(&diff_text, &config);
+        let mut sources: HashMap<String, String> = HashMap::new();
+        for file in preview_parsed.files.iter().take(20) {
+            if SupportedLanguage::from_path(&file.path).is_some() {
+                if let Ok(Some(src)) = gh.fetch_file_at_ref(&pr_ref, &file.path, &head_sha).await {
+                    sources.insert(file.path.clone(), src);
+                }
+            }
+        }
+
         (
             diff_text,
             pr_info.to_metadata(),
             existing_fps,
+            sources,
             Some((gh, pr_ref, head_sha)),
         )
     };
 
-    let prepared = prepare_review(&raw_diff, &metadata, &config);
-    let (parsed_diff, prompt) = match prepared {
+    let prepared = prepare_review_with_context(&raw_diff, &metadata, &config, &file_sources);
+    let (parsed_diff, prompt, ast_context_files) = match prepared {
         PreparedDiff::Skip {
             status: ReviewStatus::Skipped { reason },
             parsed_diff,
@@ -345,7 +366,8 @@ async fn run_review(cmd: Commands) -> Result<()> {
         PreparedDiff::Ready {
             parsed_diff,
             prompt,
-        } => (parsed_diff, prompt),
+            ast_context_files,
+        } => (parsed_diff, prompt, ast_context_files),
     };
 
     let (llm_output, usage) = if let Some(replay_dir) = &replay {
@@ -436,7 +458,7 @@ async fn run_review(cmd: Commands) -> Result<()> {
     append_step_summary(&format!(
         "### Guardian Operator Summary\n\
          - **Model:** `{model_label}`\n\
-         - **Files reviewed:** {} (skipped: {})\n\
+         - **Files reviewed:** {} (skipped: {}, AST context: {ast_context_files})\n\
          - **Funnel:** `{}`\n\
          - **Tokens:** {} in / {} out\n\
          - **Duration:** {:.2}s\n",

@@ -1,0 +1,9 @@
+diff --git a/src/billing.ts b/src/billing.ts
+--- a/src/billing.ts
++++ b/src/billing.ts
+@@ -16,5 +16,5 @@
+   const taxable = totalCents - discountCents;
+   const net = Math.max(0, taxable);
+-  return net / seats;
++  return Math.round(net / seats);
+ }

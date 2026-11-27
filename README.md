@@ -2,7 +2,7 @@
 
 > A low-noise, zero-infra, BYOK open-source PR code reviewer in Rust that only comments logical bugs and edge cases it can back with a concrete failure scenario.
 
-*(Status: **Phase 2 (`v0.2` part 1)** — 7-stage deterministic noise funnel, SHA-256 cross-commit deduplication, intra-PR pattern grouping, `--record`/`--replay`, and `guardian eval` benchmark suite.)*
+*(Status: **Phase 3 (`v0.2` part 2)** — Tree-sitter AST intra-file context for Rust, TypeScript/TSX, Python, and PHP, 7-stage deterministic noise funnel, SHA-256 cross-commit deduplication, and `guardian eval` benchmark suite.)*
 
 ## Quick Local Usage (`v0.2`)
 

@@ -227,6 +227,52 @@ impl GitHubClient {
         resp.text().await.context("failed reading PR diff text")
     }
 
+    /// Passively fetches raw file contents at `git_ref` via GitHub Contents API (no checkout).
+    /// Rejects path traversal (`..`, leading `/`, `\`) and skips files larger than 200 KB.
+    pub async fn fetch_file_at_ref(
+        &self,
+        pr: &PrRef,
+        path: &str,
+        git_ref: &str,
+    ) -> Result<Option<String>> {
+        let clean = path.trim();
+        if clean.is_empty()
+            || clean.starts_with('/')
+            || clean.contains("..")
+            || clean.contains('\\')
+        {
+            bail!("ERR_UNSAFE_FILE_PATH: rejected unsafe repository path `{clean}`");
+        }
+
+        let url = format!(
+            "{}/repos/{}/{}/contents/{}?ref={}",
+            self.api_base, pr.owner, pr.repo, clean, git_ref
+        );
+        let resp = self
+            .http
+            .get(&url)
+            .header(USER_AGENT, "guardian-pr-reviewer")
+            .header(ACCEPT, "application/vnd.github.raw+json")
+            .header(AUTHORIZATION, format!("Bearer {}", self.token))
+            .send()
+            .await
+            .context("ERR_GITHUB_NETWORK: failed fetching file contents")?;
+
+        if resp.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            tracing::warn!(path = clean, status = %resp.status(), "Could not fetch file context");
+            return Ok(None);
+        }
+
+        let text = resp.text().await.context("failed reading file body")?;
+        if text.len() > 200_000 {
+            return Ok(None);
+        }
+        Ok(Some(text))
+    }
+
     /// Reads existing PR review comments + issue comments and extracts all `<!-- guardian:fp=... -->` hashes.
     pub async fn fetch_existing_fingerprints(&self, pr: &PrRef) -> Result<HashSet<String>> {
         let mut fps = HashSet::new();
@@ -481,6 +527,28 @@ mod tests {
         assert!(fps.contains(&fp1));
         assert!(fps.contains(&fp2));
         assert_eq!(fps.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn fetches_raw_file_and_rejects_path_traversal() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/meden2010/guardian/contents/src/app.ts"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("export const ok = 1;\n"))
+            .mount(&server)
+            .await;
+
+        let gh = GitHubClient::new(server.uri(), "tok".into()).expect("gh init");
+        let pr = PrRef::parse("meden2010/guardian#5").expect("pr");
+
+        let ok = gh
+            .fetch_file_at_ref(&pr, "src/app.ts", "abc123")
+            .await
+            .expect("valid file");
+        assert_eq!(ok.as_deref(), Some("export const ok = 1;\n"));
+
+        let bad = gh.fetch_file_at_ref(&pr, "../etc/passwd", "abc123").await;
+        assert!(bad.is_err());
     }
 
     #[tokio::test]
