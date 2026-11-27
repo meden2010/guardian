@@ -2,7 +2,7 @@
 
 use crate::types::{PrMetadata, ReviewConfig};
 
-pub const PROMPT_VERSION: &str = "v0.3.0";
+pub const PROMPT_VERSION: &str = "v0.4.0";
 
 pub struct BuiltPrompt {
     pub system: String,
@@ -28,9 +28,11 @@ pub fn build_review_prompt(
          2. DO NOT report formatting, naming, style, hardcoded constants/locales that work as designed, speculative business requirements, or generic best-practice advice.\n\
          3. Every finding MUST include a specific, concrete failure `scenario` (exact inputs or state that cause a crash or wrong result).\n\
          4. If the diff has no definite logical bugs or runtime edge cases, return `{{\"findings\": []}}`. Silence is strongly preferred over false positives.\n\
-         5. LANGUAGE REQUIREMENT: Write `scenario`, `message`, and `suggestion` strictly in `{lang}`.\n\
+         5. LANGUAGE REQUIREMENT: Write `scenario` and `message` strictly in `{lang}`.\n\
          6. Cite the exact right-side line number shown before `|` in `<diff>` and copy the exact line text into `code_snippet`.\n\
          7. If `<file_context>` is provided, use it ONLY as read-only reference to check existing guards/validations earlier in the function (to avoid false positives) and understand imports/types. ONLY report findings on lines present in `<diff>`.\n\
+         8. If `<team_rules>` is provided, also flag clear violations of those repository rules introduced in `<diff>`.\n\
+         9. For `suggestion`: provide ONLY the exact drop-in replacement code line(s) for `code_snippet` (no prose), or `null` if a clean drop-in replacement does not fit.\n\
          \n\
          OUTPUT JSON SCHEMA:\n\
          {{\n\
@@ -51,6 +53,21 @@ pub fn build_review_prompt(
         lang = config.language
     );
 
+    let rules_section = if config.rules.is_empty() {
+        String::new()
+    } else {
+        let mut buf = String::from("\n\n<team_rules>\n");
+        for rule in &config.rules {
+            if let Some(id) = &rule.id {
+                buf.push_str(&format!("- [{id}] {}\n", sanitize_tag_breakout(&rule.text)));
+            } else {
+                buf.push_str(&format!("- {}\n", sanitize_tag_breakout(&rule.text)));
+            }
+        }
+        buf.push_str("</team_rules>");
+        buf
+    };
+
     let context_section = match file_context.map(str::trim).filter(|s| !s.is_empty()) {
         Some(ctx) => format!(
             "\n\n<file_context>\n{}\n</file_context>",
@@ -68,7 +85,7 @@ pub fn build_review_prompt(
          \n\
          <pr_description>\n\
          {desc}\n\
-         </pr_description>{context_section}\n\
+         </pr_description>{rules_section}{context_section}\n\
          \n\
          <diff>\n\
          {diff}\n\
@@ -86,6 +103,7 @@ fn sanitize_tag_breakout(input: &str) -> String {
     input
         .replace("</pr_title>", "<\\/pr_title>")
         .replace("</pr_description>", "<\\/pr_description>")
+        .replace("</team_rules>", "<\\/team_rules>")
         .replace("</file_context>", "<\\/file_context>")
         .replace("</diff>", "<\\/diff>")
 }

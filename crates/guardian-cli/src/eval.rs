@@ -135,9 +135,7 @@ pub async fn run_eval(args: EvalArgs) -> Result<EvalReport> {
     let config = ReviewConfig {
         language: args.language.clone(),
         min_severity: min_sev,
-        max_comments: 8,
-        max_files: 40,
-        ignore_paths: Vec::new(),
+        ..ReviewConfig::default()
     };
 
     let (llm_client, model_label) = if args.offline {

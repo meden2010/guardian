@@ -45,6 +45,14 @@ impl FindingCategory {
     }
 }
 
+/// Optional repository-specific rule declared in `.guardian.yml`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TeamRule {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub text: String,
+}
+
 /// Configuration for a review execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewConfig {
@@ -53,6 +61,11 @@ pub struct ReviewConfig {
     pub max_comments: usize,
     pub max_files: usize,
     pub ignore_paths: Vec<String>,
+    pub skip_drafts: bool,
+    pub skip_bots: bool,
+    pub fail_on_error: bool,
+    pub suggestions_enabled: bool,
+    pub rules: Vec<TeamRule>,
 }
 
 impl Default for ReviewConfig {
@@ -63,6 +76,11 @@ impl Default for ReviewConfig {
             max_comments: 8,
             max_files: 40,
             ignore_paths: Vec::new(),
+            skip_drafts: true,
+            skip_bots: true,
+            fail_on_error: false,
+            suggestions_enabled: true,
+            rules: Vec::new(),
         }
     }
 }

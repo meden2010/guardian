@@ -275,7 +275,13 @@ fn significant_words(s: &str) -> HashSet<String> {
 }
 
 /// Formats an individual inline PR comment using GitHub-native Markdown alerts and a hidden fingerprint marker.
-pub fn format_inline_comment(finding: &ValidatedFinding, language: &str) -> String {
+/// Emits a native 1-click ```` ```suggestion ```` block only when `suggestions_enabled` is true and
+/// the suggestion passes range & code-safety validation.
+pub fn format_inline_comment(
+    finding: &ValidatedFinding,
+    language: &str,
+    suggestions_enabled: bool,
+) -> String {
     let is_es = is_spanish(language);
     let (alert, sev_icon, sev_label) = match finding.severity {
         crate::types::Severity::Critical => ("CAUTION", "🔴", "Critical"),
@@ -332,15 +338,57 @@ pub fn format_inline_comment(finding: &ValidatedFinding, language: &str) -> Stri
     );
 
     if let Some(sugg) = &finding.suggestion {
-        body.push_str(&format!(
-            "\n<details>\n<summary>{suggestion_label}</summary>\n\n```\n{}\n```\n\n</details>\n",
-            sugg.trim_end()
-        ));
+        let trimmed = sugg.trim_end();
+        if suggestions_enabled && is_applicable_code_suggestion(trimmed, finding) {
+            body.push_str("\n```suggestion\n");
+            body.push_str(trimmed);
+            body.push_str("\n```\n");
+        } else {
+            body.push_str(&format!(
+                "\n<details>\n<summary>{suggestion_label}</summary>\n\n```\n{trimmed}\n```\n\n</details>\n"
+            ));
+        }
     }
 
     body.push('\n');
     body.push_str(footer);
     body
+}
+
+/// Validates that a suggestion is safe to emit as a 1-click GitHub `suggestion` block:
+/// single-line target (not grouped across multiple lines), no nested code fences, concise,
+/// and looks like code rather than natural-language prose.
+fn is_applicable_code_suggestion(sugg: &str, finding: &ValidatedFinding) -> bool {
+    let trimmed = sugg.trim();
+    if trimmed.is_empty()
+        || !finding.also_at_lines.is_empty()
+        || trimmed.contains("```")
+        || trimmed.lines().count() > 4
+    {
+        return false;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    let prose_prefixes = [
+        "add ",
+        "check ",
+        "consider ",
+        "change ",
+        "use ",
+        "make sure ",
+        "ensure ",
+        "validate ",
+        "handle ",
+        "añadir ",
+        "agregar ",
+        "verificar ",
+        "comprobar ",
+        "cambiar ",
+        "considera ",
+        "asegúrate ",
+        "validar ",
+    ];
+    !prose_prefixes.iter().any(|p| lower.starts_with(p))
 }
 
 /// Formats the fixed PR summary comment (`<!-- guardian:summary:v1 -->`) with GitHub Alerts.
@@ -616,7 +664,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert_eq!(res.inline_findings[0].line, 3);
         assert_eq!(res.inline_findings[0].also_at_lines, vec![4]);
 
-        let inline_md = format_inline_comment(&res.inline_findings[0], "es");
+        let inline_md = format_inline_comment(&res.inline_findings[0], "es", true);
         assert!(inline_md
             .contains("> [!WARNING]\n> 🟠 **High** · `edge_case` *(también en línea(s): 4)*"));
 
@@ -633,5 +681,33 @@ diff --git a/src/lib.rs b/src/lib.rs
         assert_eq!(rerun.trace.dropped_duplicate_existing, 1);
         assert!(rerun.inline_findings.is_empty());
         assert_eq!(rerun.status, ReviewStatus::ReviewedClean);
+    }
+
+    #[test]
+    fn formats_native_suggestion_for_code_and_details_for_prose() {
+        let mut finding = ValidatedFinding {
+            path: "src/lib.rs".into(),
+            line: 3,
+            also_at_lines: Vec::new(),
+            fingerprint: "v1:deadbeef".into(),
+            code_snippet: "let y = a / b;".into(),
+            category: FindingCategory::EdgeCase,
+            severity: Severity::High,
+            scenario: "When b == 0, division panics.".into(),
+            message: "Guard against zero divisor.".into(),
+            suggestion: Some("let y = a.checked_div(b).unwrap_or(0);".into()),
+        };
+
+        let native = format_inline_comment(&finding, "es", true);
+        assert!(native.contains("```suggestion\nlet y = a.checked_div(b).unwrap_or(0);\n```"));
+
+        let disabled = format_inline_comment(&finding, "es", false);
+        assert!(!disabled.contains("```suggestion"));
+        assert!(disabled.contains("<details>"));
+
+        finding.suggestion = Some("Check if b is zero before dividing.".into());
+        let prose = format_inline_comment(&finding, "es", true);
+        assert!(!prose.contains("```suggestion"));
+        assert!(prose.contains("<details>"));
     }
 }
