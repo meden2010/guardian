@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 
 use ast_context::{extract_file_context, render_contexts_for_prompt};
 use diff::{parse_unified_diff, DiffLineKind, ParsedDiff};
-use filter::{filter_findings, format_pr_summary, FilteredReview};
+use filter::{filter_findings, format_enriched_pr_summary, FilteredReview, SummaryReport};
 use prompt::{build_review_prompt, BuiltPrompt};
 use redact::redact_secrets;
 use thiserror::Error;
@@ -141,15 +141,18 @@ pub fn finalize_review(
         config,
         existing_fingerprints,
     );
-    let summary = format_pr_summary(
-        &filtered.status,
-        parsed_diff.files.len(),
-        filtered.inline_findings.len(),
-        &filtered.summary_fallback_findings,
-        filtered.trace.dropped_duplicate_existing,
+    let reviewed_paths: Vec<String> = parsed_diff.files.iter().map(|f| f.path.clone()).collect();
+    let summary = format_enriched_pr_summary(&SummaryReport {
+        status: &filtered.status,
+        reviewed_files: &reviewed_paths,
+        skipped_files: &parsed_diff.skipped_files,
+        inline_findings: &filtered.inline_findings,
+        fallback_findings: &filtered.summary_fallback_findings,
+        deduplicated_count: filtered.trace.dropped_duplicate_existing,
+        resolved_threads_count: 0,
         model_name,
-        &config.language,
-    );
+        language: &config.language,
+    });
     (filtered, summary)
 }
 
