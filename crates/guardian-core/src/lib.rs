@@ -5,6 +5,7 @@
 //! fingerprinting, and finding validation with zero network or filesystem I/O.
 
 pub mod ast_context;
+pub mod config;
 pub mod diff;
 pub mod filter;
 pub mod fingerprint;

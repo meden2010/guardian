@@ -4,13 +4,14 @@ pub mod llm;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use github::{GitHubClient, PrRef, PublishOutcome};
 use guardian_core::ast_context::SupportedLanguage;
+use guardian_core::config::{apply_repo_config, parse_repo_config};
 use guardian_core::diff::parse_unified_diff;
 use guardian_core::types::{LlmReviewOutput, PrMetadata, ReviewConfig, ReviewStatus, Severity};
 use guardian_core::{finalize_review, prepare_review_with_context, PreparedDiff};
@@ -78,21 +79,29 @@ enum Commands {
         #[arg(long, env = "GUARDIAN_ALLOW_INSECURE_HTTP")]
         allow_insecure_http: bool,
 
-        /// Language for review comments (e.g. `en`, `es`)
-        #[arg(long, env = "GUARDIAN_LANGUAGE", default_value = "en")]
-        language: String,
+        /// Language for review comments (e.g. `en`, `es`). Overrides `.guardian.yml`.
+        #[arg(long, env = "GUARDIAN_LANGUAGE")]
+        language: Option<String>,
 
-        /// Minimum severity to report
-        #[arg(long, value_enum, default_value_t = CliSeverity::Medium)]
-        min_severity: CliSeverity,
+        /// Minimum severity to report. Overrides `.guardian.yml`.
+        #[arg(long, env = "GUARDIAN_MIN_SEVERITY", value_enum)]
+        min_severity: Option<CliSeverity>,
 
-        /// Maximum comments published per PR
-        #[arg(long, default_value_t = 8)]
-        max_comments: usize,
+        /// Maximum comments published per PR. Overrides `.guardian.yml`.
+        #[arg(long, env = "GUARDIAN_MAX_COMMENTS")]
+        max_comments: Option<usize>,
 
-        /// Maximum files analyzed per execution
-        #[arg(long, default_value_t = 40)]
-        max_files: usize,
+        /// Maximum files analyzed per execution. Overrides `.guardian.yml`.
+        #[arg(long, env = "GUARDIAN_MAX_FILES")]
+        max_files: Option<usize>,
+
+        /// Disable GitHub native ```suggestion blocks (always render `<details>` instead)
+        #[arg(long, env = "GUARDIAN_NO_SUGGESTIONS")]
+        no_suggestions: bool,
+
+        /// Local `.guardian.yml` path (only used in `--diff-file` mode; PR mode always reads `base_sha`)
+        #[arg(long)]
+        config: Option<PathBuf>,
 
         /// HTTP request timeout in seconds for LLM calls
         #[arg(long, env = "GUARDIAN_TIMEOUT_SECS", default_value_t = 240)]
@@ -117,6 +126,13 @@ enum Commands {
         /// Override GitHub REST API base URL (used for GitHub Enterprise or testing)
         #[arg(long, env = "GITHUB_API_URL", default_value = "https://api.github.com")]
         github_api_url: String,
+    },
+
+    /// Validate a `.guardian.yml` repository configuration file
+    Validate {
+        /// Path to the `.guardian.yml` file to validate
+        #[arg(default_value = ".guardian.yml")]
+        path: PathBuf,
     },
 
     /// Run benchmark evaluation suite (`evals/cases`) in live LLM or offline replay mode
@@ -170,19 +186,20 @@ async fn main() -> Result<()> {
             )
             .await
         }
+        Commands::Validate { path } => run_validate(&path),
         Commands::Eval(args) => {
             eval::run_eval(args).await?;
             Ok(())
         }
         cmd @ Commands::Review { .. } => {
-            let fail_on_error = matches!(
+            let mut fail_on_error = matches!(
                 &cmd,
                 Commands::Review {
                     fail_on_error: true,
                     ..
                 }
             );
-            if let Err(err) = run_review(cmd).await {
+            if let Err(err) = run_review(cmd, &mut fail_on_error).await {
                 let safe_err = guardian_core::redact::redact_secrets(&format!("{err:#}"));
                 eprintln!("::warning::Guardian review did not complete: {safe_err}");
                 append_step_summary(&format!(
@@ -250,7 +267,85 @@ async fn run_doctor(
     Ok(())
 }
 
-async fn run_review(cmd: Commands) -> Result<()> {
+fn run_validate(path: &Path) -> Result<()> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed reading config file `{}`", path.display()))?;
+    let parsed = parse_repo_config(&raw)?;
+    for warning in &parsed.warnings {
+        eprintln!("Warning: {warning}");
+    }
+    let effective = apply_repo_config(&ReviewConfig::default(), &parsed.file);
+
+    println!(
+        "Guardian v{} — `{}` is valid",
+        guardian_core::VERSION,
+        path.display()
+    );
+    println!("  language       : {}", effective.language);
+    println!("  min_severity   : {}", effective.min_severity.as_str());
+    println!("  max_comments   : {}", effective.max_comments);
+    println!("  max_files      : {}", effective.max_files);
+    println!("  suggestions    : {}", effective.suggestions_enabled);
+    println!("  skip_drafts    : {}", effective.skip_drafts);
+    println!("  skip_bots      : {}", effective.skip_bots);
+    println!("  fail_on_error  : {}", effective.fail_on_error);
+    println!(
+        "  ignore_paths   : {} pattern(s)",
+        effective.ignore_paths.len()
+    );
+    println!("  team rules     : {} rule(s)", effective.rules.len());
+    if !parsed.warnings.is_empty() {
+        println!("  warnings       : {}", parsed.warnings.len());
+    }
+    Ok(())
+}
+
+struct CliConfigOverrides {
+    language: Option<String>,
+    min_severity: Option<CliSeverity>,
+    max_comments: Option<usize>,
+    max_files: Option<usize>,
+    no_suggestions: bool,
+    fail_on_error: bool,
+}
+
+fn resolve_effective_config(
+    repo_yaml: Option<&str>,
+    overrides: &CliConfigOverrides,
+) -> Result<ReviewConfig> {
+    let mut cfg = ReviewConfig::default();
+    if let Some(raw) = repo_yaml {
+        let parsed = parse_repo_config(raw)?;
+        for warning in &parsed.warnings {
+            eprintln!("::warning::{warning}");
+        }
+        cfg = apply_repo_config(&cfg, &parsed.file);
+    }
+
+    if let Some(lang) = &overrides.language {
+        if !lang.trim().is_empty() {
+            cfg.language = lang.trim().to_string();
+        }
+    }
+    if let Some(sev) = overrides.min_severity {
+        cfg.min_severity = sev.into();
+    }
+    if let Some(max_c) = overrides.max_comments {
+        cfg.max_comments = max_c;
+    }
+    if let Some(max_f) = overrides.max_files {
+        cfg.max_files = max_f;
+    }
+    if overrides.no_suggestions {
+        cfg.suggestions_enabled = false;
+    }
+    if overrides.fail_on_error {
+        cfg.fail_on_error = true;
+    }
+    Ok(cfg)
+}
+
+async fn run_review(cmd: Commands, effective_fail_on_error: &mut bool) -> Result<()> {
     let Commands::Review {
         diff_file,
         pr,
@@ -262,24 +357,27 @@ async fn run_review(cmd: Commands) -> Result<()> {
         min_severity,
         max_comments,
         max_files,
+        no_suggestions,
+        config: local_config_path,
         timeout_secs,
         record,
         replay,
         dry_run,
+        fail_on_error,
         github_api_url,
-        ..
     } = cmd
     else {
         unreachable!()
     };
 
     let started = Instant::now();
-    let config = ReviewConfig {
+    let overrides = CliConfigOverrides {
         language,
-        min_severity: min_severity.into(),
+        min_severity,
         max_comments,
         max_files,
-        ignore_paths: Vec::new(),
+        no_suggestions,
+        fail_on_error,
     };
 
     let model_label = match (&model, &replay) {
@@ -293,13 +391,34 @@ async fn run_review(cmd: Commands) -> Result<()> {
     };
 
     // Resolve input source: `--diff-file` (local) vs `--pr` / GitHub Actions event.
-    let (raw_diff, metadata, existing_fps, file_sources, gh_ctx) = if let Some(path) = diff_file {
+    let (
+        raw_diff,
+        metadata,
+        config,
+        config_source,
+        existing_fps,
+        resolved_threads,
+        file_sources,
+        gh_ctx,
+    ) = if let Some(path) = diff_file {
         let content = fs::read_to_string(&path)
             .with_context(|| format!("failed reading diff file `{}`", path.display()))?;
+        let (repo_yaml, src_label) = if let Some(cfg_path) = &local_config_path {
+            let raw = fs::read_to_string(cfg_path)
+                .with_context(|| format!("failed reading config file `{}`", cfg_path.display()))?;
+            (Some(raw), cfg_path.display().to_string())
+        } else {
+            (None, "defaults".to_string())
+        };
+        let config = resolve_effective_config(repo_yaml.as_deref(), &overrides)?;
+        *effective_fail_on_error = config.fail_on_error;
         (
             content,
             PrMetadata::default(),
+            config,
+            src_label,
             HashSet::new(),
+            0usize,
             HashMap::new(),
             None,
         )
@@ -314,7 +433,22 @@ async fn run_review(cmd: Commands) -> Result<()> {
         let gh = GitHubClient::new(github_api_url, gh_token)?;
         let pr_info = gh.fetch_pr(&pr_ref).await?;
 
-        if let Some(skip_reason) = pr_info.skip_reason(true, true) {
+        // Security invariant: ALWAYS read `.guardian.yml` from `base.sha`, NEVER from PR `head.sha`.
+        let repo_yaml = gh
+            .fetch_file_at_ref(&pr_ref, ".guardian.yml", &pr_info.base.sha)
+            .await?;
+        let config_source = if repo_yaml.is_some() {
+            format!(
+                ".guardian.yml@{}",
+                &pr_info.base.sha[..pr_info.base.sha.len().min(7)]
+            )
+        } else {
+            "defaults".to_string()
+        };
+        let config = resolve_effective_config(repo_yaml.as_deref(), &overrides)?;
+        *effective_fail_on_error = config.fail_on_error;
+
+        if let Some(skip_reason) = pr_info.skip_reason(config.skip_drafts, config.skip_bots) {
             println!("Guardian skipped PR: {skip_reason}");
             append_step_summary(&format!(
                 "### Guardian Operator Summary\n- **Status:** Skipped (`{skip_reason}`)\n"
@@ -323,7 +457,7 @@ async fn run_review(cmd: Commands) -> Result<()> {
         }
 
         let diff_text = gh.fetch_pr_diff(&pr_ref).await?;
-        let existing_fps = gh.fetch_existing_fingerprints(&pr_ref).await?;
+        let existing = gh.fetch_existing_fingerprints(&pr_ref).await?;
         let head_sha = pr_info.head.sha.clone();
 
         // Passively fetch full sources for AST-supported files via GitHub API (no checkout).
@@ -340,7 +474,10 @@ async fn run_review(cmd: Commands) -> Result<()> {
         (
             diff_text,
             pr_info.to_metadata(),
-            existing_fps,
+            config,
+            config_source,
+            existing.fingerprints,
+            existing.resolved_threads,
             sources,
             Some((gh, pr_ref, head_sha)),
         )
@@ -433,6 +570,7 @@ async fn run_review(cmd: Commands) -> Result<()> {
                 filtered.trace.dropped_duplicate_existing,
                 &model_label,
                 &config.language,
+                config.suggestions_enabled,
             )
             .await?;
         match outcome {
@@ -441,12 +579,13 @@ async fn run_review(cmd: Commands) -> Result<()> {
                 fallback_posted,
             } => {
                 println!(
-                    "Guardian published review on {}#{}: {} inline, {} fallback ({} deduplicated)",
+                    "Guardian published review on {}#{}: {} inline, {} fallback ({} deduplicated, {} resolved threads respected)",
                     pr_ref.repo,
                     pr_ref.number,
                     inline_posted,
                     fallback_posted,
-                    filtered.trace.dropped_duplicate_existing
+                    filtered.trace.dropped_duplicate_existing,
+                    resolved_threads
                 );
             }
             PublishOutcome::AbortedStaleState { reason } => {
@@ -457,11 +596,15 @@ async fn run_review(cmd: Commands) -> Result<()> {
 
     append_step_summary(&format!(
         "### Guardian Operator Summary\n\
+         - **Config:** `{config_source}` (rules: {}, suggestions: {})\n\
          - **Model:** `{model_label}`\n\
          - **Files reviewed:** {} (skipped: {}, AST context: {ast_context_files})\n\
+         - **Resolved threads respected:** {resolved_threads}\n\
          - **Funnel:** `{}`\n\
          - **Tokens:** {} in / {} out\n\
          - **Duration:** {:.2}s\n",
+        config.rules.len(),
+        config.suggestions_enabled,
         parsed_diff.files.len(),
         parsed_diff.skipped_files.len(),
         filtered.trace.format_funnel(),
@@ -501,5 +644,45 @@ fn append_step_summary(markdown: &str) {
                 .open(path)
                 .and_then(|mut f| std::io::Write::write_all(&mut f, markdown.as_bytes()));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_precedence_defaults_then_repo_then_cli() {
+        let yaml = r#"
+version: 1
+language: es
+review:
+  min_severity: high
+  max_comments: 5
+  skip_drafts: false
+limits:
+  max_files: 20
+behavior:
+  suggestions: true
+  fail_on_error: false
+"#;
+        let overrides = CliConfigOverrides {
+            language: Some("en".to_string()),
+            min_severity: None,
+            max_comments: Some(3),
+            max_files: None,
+            no_suggestions: true,
+            fail_on_error: true,
+        };
+
+        let effective = resolve_effective_config(Some(yaml), &overrides).expect("resolve");
+        assert_eq!(effective.language, "en"); // CLI overrides .guardian.yml
+        assert_eq!(effective.min_severity, Severity::High); // from .guardian.yml
+        assert_eq!(effective.max_comments, 3); // CLI overrides .guardian.yml
+        assert_eq!(effective.max_files, 20); // from .guardian.yml
+        assert!(!effective.skip_drafts); // from .guardian.yml
+        assert!(effective.skip_bots); // default
+        assert!(!effective.suggestions_enabled); // CLI --no-suggestions wins
+        assert!(effective.fail_on_error); // CLI --fail-on-error wins
     }
 }

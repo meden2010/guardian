@@ -156,6 +156,59 @@ struct CommentNode {
     body: String,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ExistingFingerprints {
+    pub fingerprints: HashSet<String>,
+    pub resolved_threads: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlResponse {
+    data: Option<GraphQlData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlData {
+    repository: Option<GraphQlRepo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlRepo {
+    #[serde(rename = "pullRequest")]
+    pull_request: Option<GraphQlPr>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlPr {
+    #[serde(rename = "reviewThreads")]
+    review_threads: GraphQlThreadConnection,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlThreadConnection {
+    #[serde(default)]
+    nodes: Vec<GraphQlThread>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlThread {
+    #[serde(rename = "isResolved", default)]
+    is_resolved: bool,
+    comments: GraphQlCommentConnection,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlCommentConnection {
+    #[serde(default)]
+    nodes: Vec<GraphQlComment>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphQlComment {
+    #[serde(default)]
+    body: String,
+}
+
 #[derive(Debug, Serialize)]
 struct CommentBody<'a> {
     body: &'a str,
@@ -273,10 +326,74 @@ impl GitHubClient {
         Ok(Some(text))
     }
 
-    /// Reads existing PR review comments + issue comments and extracts all `<!-- guardian:fp=... -->` hashes.
-    pub async fn fetch_existing_fingerprints(&self, pr: &PrRef) -> Result<HashSet<String>> {
-        let mut fps = HashSet::new();
+    /// Reads existing PR review threads via GraphQL (including `isResolved: true` threads)
+    /// and merges with REST review/issue comments to extract all `<!-- guardian:fp=... -->` hashes.
+    pub async fn fetch_existing_fingerprints(&self, pr: &PrRef) -> Result<ExistingFingerprints> {
+        let mut result = ExistingFingerprints::default();
 
+        // 1. GraphQL query for `reviewThreads { isResolved }` (not exposed by REST).
+        let gql_url = format!("{}/graphql", self.api_base);
+        let gql_query = r#"
+            query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                    pullRequest(number: $number) {
+                        reviewThreads(first: 100) {
+                            nodes {
+                                isResolved
+                                comments(first: 20) {
+                                    nodes { body }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        "#;
+        let gql_body = serde_json::json!({
+            "query": gql_query,
+            "variables": {
+                "owner": pr.owner,
+                "repo": pr.repo,
+                "number": pr.number,
+            }
+        });
+
+        if let Ok(resp) = self
+            .http
+            .post(&gql_url)
+            .header(USER_AGENT, "guardian-pr-reviewer")
+            .header(ACCEPT, "application/vnd.github+json")
+            .header(AUTHORIZATION, format!("Bearer {}", self.token))
+            .json(&gql_body)
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                if let Ok(parsed) = resp.json::<GraphQlResponse>().await {
+                    if let Some(threads) = parsed
+                        .data
+                        .and_then(|d| d.repository)
+                        .and_then(|r| r.pull_request)
+                        .map(|p| p.review_threads.nodes)
+                    {
+                        for thread in threads {
+                            let mut thread_has_fp = false;
+                            for comment in thread.comments.nodes {
+                                for fp in extract_fingerprints(&comment.body) {
+                                    result.fingerprints.insert(fp);
+                                    thread_has_fp = true;
+                                }
+                            }
+                            if thread.is_resolved && thread_has_fp {
+                                result.resolved_threads += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. REST comments (covers fallback summary comments and degrades gracefully if GraphQL fails).
         let review_comments_url = format!(
             "{}/repos/{}/{}/pulls/{}/comments?per_page=100",
             self.api_base, pr.owner, pr.repo, pr.number
@@ -301,13 +418,13 @@ impl GitHubClient {
                 let items: Vec<CommentNode> = resp.json().await.unwrap_or_default();
                 for item in items {
                     for fp in extract_fingerprints(&item.body) {
-                        fps.insert(fp);
+                        result.fingerprints.insert(fp);
                     }
                 }
             }
         }
 
-        Ok(fps)
+        Ok(result)
     }
 
     /// Atomically publishes inline review comments + upserts the single fixed summary comment.
@@ -324,6 +441,7 @@ impl GitHubClient {
         deduplicated_count: usize,
         model_name: &str,
         language: &str,
+        suggestions_enabled: bool,
     ) -> Result<PublishOutcome> {
         let latest = self.fetch_pr(pr).await?;
         if latest.state != "open" {
@@ -350,7 +468,7 @@ impl GitHubClient {
                     path: &f.path,
                     line: f.line,
                     side: "RIGHT",
-                    body: format_inline_comment(f, language),
+                    body: format_inline_comment(f, language, suggestions_enabled),
                 })
                 .collect();
 
@@ -524,9 +642,59 @@ mod tests {
         let gh = GitHubClient::new(server.uri(), "tok".into()).expect("gh init");
         let pr = PrRef::parse("meden2010/guardian#5").expect("pr");
         let fps = gh.fetch_existing_fingerprints(&pr).await.expect("fps");
-        assert!(fps.contains(&fp1));
-        assert!(fps.contains(&fp2));
-        assert_eq!(fps.len(), 2);
+        assert!(fps.fingerprints.contains(&fp1));
+        assert!(fps.fingerprints.contains(&fp2));
+        assert_eq!(fps.fingerprints.len(), 2);
+        assert_eq!(fps.resolved_threads, 0);
+    }
+
+    #[tokio::test]
+    async fn fetches_resolved_thread_fingerprints_via_graphql() {
+        let server = MockServer::start().await;
+        let fp_resolved = compute_fingerprint("src/app.ts", "x / y", FindingCategory::EdgeCase);
+
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "nodes": [
+                                    {
+                                        "isResolved": true,
+                                        "comments": {
+                                            "nodes": [
+                                                { "body": format!("{}\nResolved finding", format_fp_marker(&fp_resolved)) }
+                                            ]
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/repos/meden2010/guardian/pulls/8/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/repos/meden2010/guardian/issues/8/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+
+        let gh = GitHubClient::new(server.uri(), "tok".into()).expect("gh init");
+        let pr = PrRef::parse("meden2010/guardian#8").expect("pr");
+        let fps = gh.fetch_existing_fingerprints(&pr).await.expect("fps");
+        assert!(fps.fingerprints.contains(&fp_resolved));
+        assert_eq!(fps.resolved_threads, 1);
     }
 
     #[tokio::test]
@@ -582,6 +750,7 @@ mod tests {
                 0,
                 "qwen2.5-coder:14b",
                 "es",
+                true,
             )
             .await
             .expect("publish call");
@@ -655,6 +824,7 @@ mod tests {
                 0,
                 "qwen2.5-coder:14b",
                 "es",
+                true,
             )
             .await
             .expect("422 fallback should succeed");
