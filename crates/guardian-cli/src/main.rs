@@ -1,6 +1,7 @@
 pub mod eval;
 pub mod github;
 pub mod llm;
+pub mod serve;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -139,6 +140,9 @@ enum Commands {
     /// Run benchmark evaluation suite (`evals/cases`) in live LLM or offline replay mode
     Eval(eval::EvalArgs),
 
+    /// Run a self-hosted GitHub App webhook server listening for PR events
+    Serve(serve::ServeArgs),
+
     /// Validate environment, URL safety, and LLM / GitHub connectivity
     Doctor {
         #[arg(
@@ -192,6 +196,7 @@ async fn main() -> Result<()> {
             eval::run_eval(args).await?;
             Ok(())
         }
+        Commands::Serve(args) => serve::run_serve(args).await,
         cmd @ Commands::Review { .. } => {
             let mut fail_on_error = matches!(
                 &cmd,
@@ -301,13 +306,31 @@ fn run_validate(path: &Path) -> Result<()> {
     Ok(())
 }
 
-struct CliConfigOverrides {
-    language: Option<String>,
-    min_severity: Option<CliSeverity>,
-    max_comments: Option<usize>,
-    max_files: Option<usize>,
-    no_suggestions: bool,
-    fail_on_error: bool,
+#[derive(Debug, Clone)]
+pub struct CliConfigOverrides {
+    pub language: Option<String>,
+    pub min_severity: Option<CliSeverity>,
+    pub max_comments: Option<usize>,
+    pub max_files: Option<usize>,
+    pub no_suggestions: bool,
+    pub fail_on_error: bool,
+}
+
+pub struct ReviewExecutionParams {
+    pub diff_file: Option<PathBuf>,
+    pub pr: Option<String>,
+    pub base_url: String,
+    pub model: Option<String>,
+    pub api_key_env: String,
+    pub allow_insecure_http: bool,
+    pub overrides: CliConfigOverrides,
+    pub local_config_path: Option<PathBuf>,
+    pub timeout_secs: u64,
+    pub record: Option<PathBuf>,
+    pub replay: Option<PathBuf>,
+    pub dry_run: bool,
+    pub github_api_url: String,
+    pub github_token_override: Option<String>,
 }
 
 fn resolve_effective_config(
@@ -371,15 +394,57 @@ async fn run_review(cmd: Commands, effective_fail_on_error: &mut bool) -> Result
         unreachable!()
     };
 
+    execute_review_with_token(
+        ReviewExecutionParams {
+            diff_file,
+            pr,
+            base_url,
+            model,
+            api_key_env,
+            allow_insecure_http,
+            overrides: CliConfigOverrides {
+                language,
+                min_severity,
+                max_comments,
+                max_files,
+                no_suggestions,
+                fail_on_error,
+            },
+            local_config_path,
+            timeout_secs,
+            record,
+            replay,
+            dry_run,
+            github_api_url,
+            github_token_override: None,
+        },
+        effective_fail_on_error,
+    )
+    .await
+}
+
+pub async fn execute_review_with_token(
+    params: ReviewExecutionParams,
+    effective_fail_on_error: &mut bool,
+) -> Result<()> {
+    let ReviewExecutionParams {
+        diff_file,
+        pr,
+        base_url,
+        model,
+        api_key_env,
+        allow_insecure_http,
+        overrides,
+        local_config_path,
+        timeout_secs,
+        record,
+        replay,
+        dry_run,
+        github_api_url,
+        github_token_override,
+    } = params;
+
     let started = Instant::now();
-    let overrides = CliConfigOverrides {
-        language,
-        min_severity,
-        max_comments,
-        max_files,
-        no_suggestions,
-        fail_on_error,
-    };
 
     let model_label = match (&model, &replay) {
         (Some(m), _) => m.clone(),
@@ -429,8 +494,11 @@ async fn run_review(cmd: Commands, effective_fail_on_error: &mut bool) -> Result
             None => detect_pr_from_github_env()?,
         };
         let pr_ref = PrRef::parse(&pr_spec)?;
-        let gh_token = std::env::var("GITHUB_TOKEN")
-            .context("ERR_MISSING_GITHUB_TOKEN: set GITHUB_TOKEN for PR review")?;
+        let gh_token = match github_token_override {
+            Some(tok) if !tok.trim().is_empty() => tok,
+            _ => std::env::var("GITHUB_TOKEN")
+                .context("ERR_MISSING_GITHUB_TOKEN: set GITHUB_TOKEN for PR review")?,
+        };
         let gh = GitHubClient::new(github_api_url, gh_token)?;
         let pr_info = gh.fetch_pr(&pr_ref).await?;
 
