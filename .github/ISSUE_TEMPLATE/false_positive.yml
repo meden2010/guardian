@@ -1,0 +1,34 @@
+name: False Positive Report
+description: Report a noisy or incorrect Guardian comment so we can add it to the eval suite.
+title: "[FP]: "
+labels: ["false-positive", "evals"]
+body:
+  - type: textarea
+    id: diff
+    attributes:
+      label: Minimal Unified Diff
+      description: Paste the smallest diff that reproduces the false positive (redact any proprietary/sensitive code).
+      render: diff
+    validations:
+      required: true
+  - type: textarea
+    id: comment
+    attributes:
+      label: Guardian Comment
+      description: Paste the exact comment Guardian posted (including severity, category, and scenario).
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why is this a false positive?
+      description: Explain why the code is actually safe (e.g. guarded earlier in the file, invariant guaranteed by type system, etc.).
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model & Guardian Version
+      placeholder: "e.g. qwen2.5-coder:7b / Guardian v1.0.0"
+    validations:
+      required: true
